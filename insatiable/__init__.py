@@ -1,9 +1,6 @@
 import argparse
 import sys
 
-from insatiable import expressions
-from insatiable.expressions import true, false, solve_expr, var
-
 
 def log(message):
     print(message, file=sys.stderr, flush=True)

@@ -1,4 +1,4 @@
-from insatiable import true, false, var, solve_expr
+from insatiable.expressions import true, false, var, solve_expr
 
 
 def main():
