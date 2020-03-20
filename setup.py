@@ -3,7 +3,7 @@ import setuptools
 name = 'insatiable'
 dependencies = []
 dependencies_dev = ['pytest']
-console_scripts = ['insatiable = insatiable:entry_point']
+console_scripts = ['insatiable = insatiable.cli:entry_point']
 
 setuptools.setup(
     name=name,
