@@ -1,4 +1,4 @@
-from typing import Union, List, Mapping
+from typing import List, Mapping, Optional
 
 from insatiable.cnf import run_minisat, CNFExprBuilder, CNFExprVar, CNFExpr, \
     CNFSolution
@@ -116,13 +116,18 @@ class Vars:
     """
     Helper used to implement the member `var` of this module.
     """
+
+    def __call__(self, name):
+        return Var(name)
+
     def __getattr__(self, item):
-        return Var(item)
+        return self(item)
 
 
 """
 Each attribute accessed on this instance returns a `Var` instance with the 
-name of the accessed attribute.
+name of the accessed attribute. Can also be called with the variable name
+specified as string with the same result.
 """
 var = Vars()
 
@@ -134,9 +139,9 @@ class CompiledExpr:
     expression to CNF variables of the converted expression.
     """
 
-    def __init__(self, cnf_expr: CNFExpr, cnf_vars_by_vars: Mapping[Var, CNFExprVar]):
+    def __init__(self, cnf_expr: CNFExpr, cnf_vars_by_var: Mapping[Var, CNFExprVar]):
         self.cnf_expr = cnf_expr
-        self.cnf_vars_by_vars = cnf_vars_by_vars
+        self.cnf_vars_by_var = cnf_vars_by_var
 
     def resolve_solution(self, solution: CNFSolution) -> Mapping[Var, bool]:
         """
@@ -145,7 +150,7 @@ class CompiledExpr:
         booleans.
         """
 
-        return {k: solution[v] for k, v in self.cnf_vars_by_vars.items()}
+        return {k: solution[v] for k, v in self.cnf_vars_by_var.items()}
 
 
 def to_cnf(e: Expr) -> CompiledExpr:
@@ -163,7 +168,7 @@ def to_cnf(e: Expr) -> CompiledExpr:
     builder = CNFExprBuilder()
     cnf_vars_by_expr = {}
 
-    def walk(e) -> Union[CNFExprVar]:
+    def walk(e) -> CNFExprVar:
         # Special case for simple inversions, which do not need an additional
         # variable.
         if isinstance(e, Nand) and len(e.children) == 1:
@@ -182,7 +187,7 @@ def to_cnf(e: Expr) -> CompiledExpr:
                 pass
             elif isinstance(e, Nand):
                 # We can assume that the children of a Nand instance do
-                # not contain redundant terms. The nand() constructor
+                # not contain redundant terms. The _nand() constructor
                 # removes them.
                 cnf_children = [walk(i) for i in e.children]
 
@@ -199,13 +204,13 @@ def to_cnf(e: Expr) -> CompiledExpr:
     # Require the root variable to be true.
     builder.add_clause(walk(e))
 
-    cnf_vars_by_vars = \
+    cnf_vars_by_var = \
         {k: v for k, v in cnf_vars_by_expr.items() if isinstance(k, Var)}
 
-    return CompiledExpr(builder.build(), cnf_vars_by_vars)
+    return CompiledExpr(builder.build(), cnf_vars_by_var)
 
 
-def solve_expr(expr: Expr) -> Mapping[Var, bool]:
+def solve_expr(expr: Expr) -> Optional[Mapping[Var, bool]]:
     """
     Solve an `Expr` instance and return a map from the variables used in the
     expression to booleans. If no solution is found, None is returned.
@@ -220,5 +225,5 @@ def solve_expr(expr: Expr) -> Mapping[Var, bool]:
 
     if cnf_solution is None:
         return None
-    else:
-        return compiled_expr.resolve_solution(cnf_solution)
+
+    return compiled_expr.resolve_solution(cnf_solution)
