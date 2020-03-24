@@ -1,11 +1,11 @@
-from typing import List, Mapping, Optional
+import weakref
+from typing import Mapping, Optional, MutableMapping, FrozenSet
 
 from insatiable.cnf import run_minisat, CNFExprBuilder, CNFExprVar, CNFExpr, \
     CNFSolution
-from insatiable.util import Hashable
 
 
-class Expr(Hashable):
+class Expr:
     """
     Represents a boolean expression in terms of a number of variables.
     """
@@ -53,12 +53,9 @@ class Var(Expr):
     def __repr__(self):
         return f'vars.{self.name}'
 
-    def _hashable_key(self):
-        return self.name
-
 
 class Nand(Expr):
-    def __init__(self, children: List[Expr]):
+    def __init__(self, children: FrozenSet[Expr]):
         self.children = children
 
     def __repr__(self):
@@ -71,31 +68,41 @@ class Nand(Expr):
 
             return f'~({children_str})'
 
-    def _hashable_key(self):
-        return frozenset(self.children)
+
+_var_instances: MutableMapping[str, Var] = \
+    weakref.WeakValueDictionary()
+
+_nand_instances: MutableMapping[FrozenSet[Expr], Nand] = \
+    weakref.WeakValueDictionary()
+
+
+def _single_nand_child(expr: Expr):
+    if isinstance(expr, Nand) and len(expr.children) == 1:
+        i_child, = expr.children
+
+        return i_child
+    else:
+        return None
 
 
 def _simplify_nand_children(children):
-    new_children = []
+    # Ignore children which are equivalent to other children.
+    new_children = set()
 
     for i in children:
-        added_children = [i]
+        i_child = _single_nand_child(i)
 
         # By accident, this will also expand true to an empty list.
-        if isinstance(i, Nand) and len(i.children) == 1:
-            i_child, = i.children
-
-            if isinstance(i_child, Nand):
-                added_children = i_child.children
-
-        for j in added_children:
-            # Ignore children which are equivalent to other children.
-            if j not in new_children:
-                new_children.append(j)
+        if isinstance(i_child, Nand):
+            new_children |= i_child.children
+        else:
+            new_children.add(i)
 
     for i in new_children:
         if isinstance(i, Nand):
-            if all(j in new_children for j in i.children):
+            # Check if we have a term which will be false in all cases where
+            # even a subset of the other terms are true.
+            if i.children <= new_children:
                 return [false]
 
     return new_children
@@ -103,18 +110,22 @@ def _simplify_nand_children(children):
 
 def _nand(*children):
     # Remove redundant children.
-    children = _simplify_nand_children(children)
+    children = frozenset(_simplify_nand_children(children))
 
     # Simplify Nand(Nand(x)) to x.
     if len(children) == 1:
         child, = children
+        child_child = _single_nand_child(child)
 
-        if isinstance(child, Nand) and len(child.children) == 1:
-            child_child, = child.children
-
+        if child_child is not None:
             return child_child
 
-    return Nand(children)
+    instance = _nand_instances.get(children)
+
+    if instance is None:
+        instance = _nand_instances[children] = Nand(children)
+
+    return instance
 
 
 false = _nand()
@@ -127,7 +138,12 @@ class Vars:
     """
 
     def __call__(self, name):
-        return Var(name)
+        instance = _var_instances.get(name)
+
+        if instance is None:
+            instance = _var_instances[name] = Var(name)
+
+        return instance
 
     def __getattr__(self, item):
         return self(item)
@@ -180,14 +196,10 @@ def to_cnf(e: Expr) -> CompiledExpr:
     def walk(e) -> CNFExprVar:
         # Special case for simple inversions, which do not need an additional
         # variable.
-        if isinstance(e, Nand) and len(e.children) == 1:
-            child, = e.children
-
+        if (child := _single_nand_child(e)) is not None:
             return ~walk(child)
 
-        cnf_var = cnf_vars_by_expr.get(e)
-
-        if cnf_var is None:
+        if (cnf_var := cnf_vars_by_expr.get(e)) is None:
             cnf_var = builder.add_variable()
             cnf_vars_by_expr[e] = cnf_var
 

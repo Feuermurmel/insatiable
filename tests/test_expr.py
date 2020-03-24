@@ -1,8 +1,8 @@
-from insatiable.expressions import Nand, false, true, var
+from insatiable.expressions import false, true, var, _nand
 
 
 def n(*args):
-    return Nand([*args])
+    return _nand(*args)
 
 
 a = var.a
