@@ -73,28 +73,28 @@ class Nand(Expr):
         return frozenset(self.children)
 
 
-def _expand_nand_child(child):
-    # By accident, this will also expand true to an empty list.
-    if isinstance(child, Nand) and len(child.children) == 1:
-        child_child, = child.children
-
-        if isinstance(child_child, Nand):
-            return child_child.children
-
-    return [child]
-
-
 def _simplify_nand_children(children):
     new_children = []
 
     for i in children:
-        # Ignore other children if one of them is constant false.
-        if i == false:
-            return [i]
+        added_children = [i]
 
-        # Ignore children which are equivalent to other children.
-        if i not in new_children:
-            new_children.extend(_expand_nand_child(i))
+        # By accident, this will also expand true to an empty list.
+        if isinstance(i, Nand) and len(i.children) == 1:
+            i_child, = i.children
+
+            if isinstance(i_child, Nand):
+                added_children = i_child.children
+
+        for j in added_children:
+            # Ignore children which are equivalent to other children.
+            if j not in new_children:
+                new_children.append(j)
+
+    for i in new_children:
+        if isinstance(i, Nand):
+            if all(j in new_children for j in i.children):
+                return [false]
 
     return new_children
 
@@ -215,6 +215,16 @@ def to_cnf(e: Expr) -> CompiledExpr:
         {k: v for k, v in cnf_vars_by_expr.items() if isinstance(k, Var)}
 
     return CompiledExpr(builder.build(), cnf_vars_by_var)
+
+
+def apply_expr(expr: Expr, values: Mapping[Var, bool]):
+    if isinstance(expr, Var):
+        # TODO: Fix this!
+        return values.get(expr, True)
+    elif isinstance(expr, Nand):
+        return not all(apply_expr(i, values) for i in expr.children)
+    else:
+        assert False
 
 
 def solve_expr(expr: Expr) -> Optional[Mapping[Var, bool]]:
