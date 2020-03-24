@@ -31,6 +31,13 @@ class Expr(Hashable):
 
         return (self | other) & ~(self & other)
 
+    def __truediv__(self, other):
+        """
+        Return the difference `self WITHOUT other` of the two expressions.
+        """
+
+        return self & ~other
+
     def __invert__(self):
         """
         Return the negation `NOT self` of the two expressions.
