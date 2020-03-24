@@ -128,6 +128,14 @@ def _nand(*children):
     return instance
 
 
+def and_all(exprs) -> Expr:
+    return ~_nand(*exprs)
+
+
+def or_all(exprs) -> Expr:
+    return _nand(*(~i for i in exprs))
+
+
 false = _nand()
 true = ~false
 
