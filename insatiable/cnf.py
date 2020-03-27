@@ -3,18 +3,20 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from typing import List, Set, Any, TextIO, Optional
+from typing import List, Set, TextIO, Optional
+
+from insatiable.util import Hashable
 
 
-class CNFExprVar:
+class CNFExprVar(Hashable):
     """
     Represents a variable in CNF expression. The variable is encoded the same
     as in a DIMACS CNF file. IDs are positive integers and are negated to
     express that the inverted value of the variable is used in a CNF clause.
     """
 
-    def __init__(self, id):
-        self._id = id
+    def __init__(self, id: int):
+        self.id = id
 
     def __invert__(self):
         """
@@ -22,10 +24,13 @@ class CNFExprVar:
         of a variable should be used when the variable is used in a CNF clause.
         """
 
-        return type(self)(-self._id)
+        return type(self)(-self.id)
 
     def __repr__(self):
-        return f'CNFExprVar({self._id})'
+        return f'CNFExprVar({self.id})'
+
+    def _hashable_key(self):
+        return self.id
 
 
 class CNFExpr:
@@ -36,7 +41,7 @@ class CNFExpr:
     See: https://people.sc.fsu.edu/~jburkardt/data/cnf/cnf.html
     """
 
-    def __init__(self, max_var_id, clauses: List[Set[Any]]):
+    def __init__(self, max_var_id, clauses: List[Set[CNFExprVar]]):
         self.max_var_id = max_var_id
         self.clauses = clauses
 
@@ -93,7 +98,7 @@ class CNFSolution:
         """
 
         # Invert the value when the id is negative.
-        return self._values_by_id[abs(item._id)] != (item._id < 0)
+        return self._values_by_id[abs(item.id)] != (item.id < 0)
 
 
 def write_cnf_expr(expr: CNFExpr, file: TextIO):
@@ -105,7 +110,7 @@ def write_cnf_expr(expr: CNFExpr, file: TextIO):
     print(f'p cnf {expr.max_var_id} {len(expr.clauses)}', file=file)
 
     for i in expr.clauses:
-        parts = sorted((j._id for j in i), key=abs) + [0]
+        parts = sorted((j.id for j in i), key=abs) + [0]
 
         print(' '.join(map(str, parts)), file=file)
 
