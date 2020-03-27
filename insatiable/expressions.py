@@ -136,6 +136,10 @@ def or_all(exprs) -> Expr:
     return _nand(*(~i for i in exprs))
 
 
+def ite(condition, then, or_else):
+    return then & condition | or_else / condition
+
+
 false = _nand()
 true = ~false
 
