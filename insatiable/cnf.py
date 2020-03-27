@@ -82,14 +82,14 @@ class CNFExprBuilder:
 class CNFSolution:
     """
     Represents a solution obtained from running a SAT solver on a CNF
-    expression. The solution is represented as a mapping from all CNF
-    variables used in the original CNF expression to the boolean values
-    assigned to them as part of the solution. The values can be accessed
+    expression. The solution contains the values assigned to each variable in
+    the original expression. The values of the variables with IDs from 1 to n
+    are contained in an array at index 0 to n - 1. The values can be accessed
     using the subscript operator.
     """
 
-    def __init__(self, values_by_id):
-        self._values_by_id = values_by_id
+    def __init__(self, values):
+        self._values = values
 
     def __getitem__(self, item: CNFExprVar):
         """
@@ -98,7 +98,7 @@ class CNFSolution:
         """
 
         # Invert the value when the id is negative.
-        return self._values_by_id[abs(item.id)] != (item.id < 0)
+        return self._values[abs(item.id) - 1] != (item.id < 0)
 
 
 def write_cnf_expr(expr: CNFExpr, file: TextIO):
@@ -142,11 +142,16 @@ def read_cnf_solution(file, original_expr: CNFExpr) -> Optional[CNFSolution]:
                 f'Number of variables does not match original expression: '
                 f'{max(values_by_id)} != {original_expr.max_var_id}')
 
-        for i in range(1, original_expr.max_var_id + 1):
-            if i not in values_by_id:
-                raise Exception(f'Missing value for variable: {i}')
+        def iter_values():
+            for i in range(1, original_expr.max_var_id + 1):
+                value = values_by_id.get(i)
 
-        return CNFSolution(values_by_id)
+                if value is None:
+                    raise Exception(f'Missing value for variable: {i}')
+
+                yield value
+
+        return CNFSolution([*iter_values()])
     elif line == 'UNSAT':
         return None
     else:
