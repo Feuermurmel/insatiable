@@ -1,3 +1,4 @@
+import sys
 import weakref
 from typing import Mapping, Optional, MutableMapping, FrozenSet
 
@@ -288,3 +289,31 @@ def solve_expr(expr: Expr) -> Optional[ExprSolution]:
         return None
 
     return compiled_expr.resolve_solution(cnf_solution)
+
+
+def dump_compiled_expr(expr: CompiledExpr, file=sys.stdout):
+    """
+    Write all clauses of the CNF expression contained in the specified
+    compiled expression to the specified file. CNF variables that were
+    already present in the original boolean expression will be mapped to
+    their original name.
+    """
+
+    vars_names_cnf_var_id = {
+        cnf_var.id: var.name
+        for var, cnf_var in expr.cnf_vars_by_var.items()}
+
+    def map_var(v: CNFExprVar):
+        prefix = '~' if v.id < 0 else ''
+        name_or_id = vars_names_cnf_var_id.get(abs(v.id), abs(v.id))
+
+        # Sort variables by their mapped name or ID, sorting variables with a
+        # name before the others.
+        sort_key = isinstance(name_or_id, int), name_or_id
+
+        # The tuples will be sorted by their first element. The second element
+        # is used in the output.
+        return sort_key, f'{prefix}{name_or_id}'
+
+    for i in expr.cnf_expr.clauses:
+        print(' '.join(j for _, j in sorted(map(map_var, i))), file=file)
