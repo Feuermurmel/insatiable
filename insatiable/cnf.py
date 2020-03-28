@@ -153,7 +153,7 @@ def read_cnf_solution(file, original_expr: CNFExpr) -> Optional[CNFSolution]:
         raise Exception(f'Invalid first line: {line}')
 
 
-def run_minisat(expr: CNFExpr, *, print_input_file=False, print_solution_file=False):
+def run_minisat(expr: CNFExpr, *, print_input_file=False, print_solution_file=False) -> Optional[CNFSolution]:
     """
     Run MiniSAT, passing it the specified CNF expression as SAT problem to
     solve. Returns the solution found by MiniSAT, if any, as a `CNFSolution`
@@ -181,7 +181,9 @@ def run_minisat(expr: CNFExpr, *, print_input_file=False, print_solution_file=Fa
             with in_path.open(encoding='utf-8') as file:
                 shutil.copyfileobj(file, sys.stderr)
 
-        exit_code = subprocess.call(['minisat', str(in_path), str(out_path)])
+        exit_code = subprocess.call(
+            ['minisat', str(in_path), str(out_path)],
+            stdout=sys.stderr.buffer)
 
         assert exit_code in [10, 20]
 
