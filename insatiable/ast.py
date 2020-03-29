@@ -537,7 +537,21 @@ def run_block(stmts: List[ast.stmt], scope: Scope, state: ExecutionState):
             fail_unhandled_node(stmt)
 
 
-def run_module(module: Module):
+class InsatiableSolution:
+    def __init__(self, print_calls: List[List[Any]]):
+        self.print_calls = print_calls
+
+    def run(self, print_dest=sys.stdout):
+        """
+        Actually execute the side-effects of the program. This includes
+        writing the output from all print() calls to the specified file.
+        """
+
+        for items in self.print_calls:
+            print(*items, file=print_dest)
+
+
+def solve_module(module: Module) -> Optional[InsatiableSolution]:
     try:
         # We glue some code in front of the module to define some builtins.
         merged_module_ast = ast.Module(
@@ -569,8 +583,9 @@ def run_module(module: Module):
         solution = solve_expr(invariants)
 
         if solution is None:
-            print('No solutions found.')
-        else:
+            return None
+
+        def iter_print_calls():
             for items, slice in print_calls:
                 if solution(slice):
                     def iter_items():
@@ -594,7 +609,18 @@ def run_module(module: Module):
                             else:
                                 yield j
 
-                    print(*iter_items())
+                    yield [*iter_items()]
 
-            if solution(exception_value.boolean_slice, solution):
-                print('An assertion failed.')
+            if solution(exception_value.boolean_slice):
+                yield ['An assertion failed.']
+
+        return InsatiableSolution([*iter_print_calls()])
+
+
+def run_module(module: Module):
+    solution = solve_module(module)
+
+    if solution is None:
+        print('No solutions found.')
+    else:
+        solution.run()
