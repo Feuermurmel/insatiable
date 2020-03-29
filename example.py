@@ -21,7 +21,7 @@ def main():
     if solution is None:
         print('unsatisfiable')
     else:
-        for k, v in sorted(solution.items(), key=lambda x: x[0].name):
+        for k, v in sorted(solution.values_by_var.items(), key=lambda x: x[0].name):
             print(f'{k.name}: {v}')
 
 

@@ -180,14 +180,15 @@ class CompiledExpr:
         self.cnf_expr = cnf_expr
         self.cnf_vars_by_var = cnf_vars_by_var
 
-    def resolve_solution(self, solution: CNFSolution) -> Mapping[Var, bool]:
+    def resolve_solution(self, solution: CNFSolution) -> 'ExprSolution':
         """
         Use the symbol table in this instance to resolve the specified
         solution to a map from variables of the original expression to
         booleans.
         """
 
-        return {k: solution[v] for k, v in self.cnf_vars_by_var.items()}
+        return ExprSolution(
+            {k: solution[v] for k, v in self.cnf_vars_by_var.items()})
 
 
 def to_cnf(e: Expr) -> CompiledExpr:
@@ -243,17 +244,34 @@ def to_cnf(e: Expr) -> CompiledExpr:
     return CompiledExpr(builder.build(), cnf_vars_by_var)
 
 
-def apply_expr(expr: Expr, values: Mapping[Var, bool]):
-    if isinstance(expr, Var):
-        # TODO: Fix this!
-        return values.get(expr, True)
-    elif isinstance(expr, Nand):
-        return not all(apply_expr(i, values) for i in expr.children)
-    else:
-        assert False
+class ExprSolution:
+    """
+    Represents a solution which satisfies an expression. The solution assigns
+    a boolean value to each variable used in the original expression.
+    """
+
+    def __init__(self, values_by_var: Mapping[Var, bool]):
+        self.values_by_var = values_by_var
+
+    def __call__(self, expr: Expr) -> bool:
+        """
+        Evaluate an expression by replacing each variable in the specified
+        expression with its value from the solution.
+
+        The solution only contains a definitive value for variables which
+        appeared in the expression which was solved. All other variables are
+        assumed to have the value `False`.
+        """
+
+        if isinstance(expr, Var):
+            return self.values_by_var.get(expr, False)
+        elif isinstance(expr, Nand):
+            return not all(self(i) for i in expr.children)
+        else:
+            assert False
 
 
-def solve_expr(expr: Expr) -> Optional[Mapping[Var, bool]]:
+def solve_expr(expr: Expr) -> Optional[ExprSolution]:
     """
     Solve an `Expr` instance and return a map from the variables used in the
     expression to booleans. If no solution is found, None is returned.
