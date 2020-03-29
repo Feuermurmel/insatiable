@@ -67,7 +67,9 @@ class Nand(Expr):
         elif self == false:
             return 'false'
         else:
-            return 'nand({})'.format(', '.join(map(repr, self.children)))
+            children_str = ' & '.join(map(repr, self.children))
+
+            return f'~({children_str})'
 
     def _hashable_key(self):
         return frozenset(self.children)
