@@ -440,7 +440,7 @@ class ExecutionState:
             variable = Variable()
 
         # Catch slices in which the variable has not been assigned yet.
-        with self.with_condition(~variable.assigned_slice):
+        for _ in self.on_condition(~variable.assigned_slice):
             self.add_print_call(
                 f'Variable \'{name}\' referenced before assignment.')
             self.set_exception(_none_value)
@@ -459,12 +459,13 @@ class ExecutionState:
         # scope is resolved beforehand.
         self.scope.find_variable(name).write(value, self.slice)
 
-    @contextlib.contextmanager
-    def with_condition(self, condition):
+    def on_condition(self, condition):
         excluded_slice = self.slice / condition
         self.slice &= condition
 
-        yield
+        # Only run the wrapped block if the new slice is not definitely empty.
+        if self.slice != false:
+            yield
 
         # Add the part of the slice excluded by the condition back to the
         # slice.
@@ -552,7 +553,7 @@ def run_call(fn_value: Value, args: List[Value], state: ExecutionState) -> Value
     # the return and exception values in the state.
     for shape, box in fn_value.boxes_by_shape.items():
         if isinstance(shape, FunctionShape):
-            with state.with_condition(box.slice):
+            for _ in state.on_condition(box.slice):
                 # Try to optimize some obvious nonsense.
                 if state.slice != false:
                     run_function(shape.value, args, state)
@@ -631,7 +632,7 @@ def run_assignment(target: ast.expr, value: Value, state: ExecutionState):
         target_len = len(target.elts) - len(starred_items)
 
         for shape, box in value.boxes_by_shape.items():
-            with state.with_condition(box.slice):
+            for _ in state.on_condition(box.slice):
                 if not isinstance(shape, TupleShape):
                     state.add_print_call('Can only unpack a tuple, got:', value)
                     state.set_exception(_none_value)
@@ -722,10 +723,10 @@ def run_block(stmts: List[ast.stmt], state: ExecutionState):
             condition_value = run_expression(stmt.test, state)
             condition = _boolean(condition_value)
 
-            with state.with_condition(condition):
+            for _ in state.on_condition(condition):
                 run_block(stmt.body, state)
 
-            with state.with_condition(~condition):
+            for _ in state.on_condition(~condition):
                 run_block(stmt.orelse, state)
         elif isinstance(stmt, ast.FunctionDef):
             # In the execution context where the function is instantiated,
