@@ -43,6 +43,23 @@ def test_values_functions(runner):
     runner.check_output_line('x')
 
 
+def test_values_tuples(runner):
+    runner.run(
+        """
+        a = bool()
+
+        if a:
+            b = ('a', 'b')
+        else:
+            b = ('c', 'd', 'e')
+
+        print(b)
+        invariant(a)
+        """)
+
+    runner.check_output_line("('a', 'b')")
+
+
 def test_return(runner):
     """
     Check that return values are kept apart.

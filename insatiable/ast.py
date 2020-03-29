@@ -84,6 +84,20 @@ class BooleanShape(Shape):
 _boolean_shape = BooleanShape()
 
 
+class TupleShape(Shape):
+    def __init__(self, len: int):
+        self.len = len
+
+    def _hashable_key(self):
+        return self.len
+
+    def combine_items(self, condition, then_item, or_else_item):
+        return [_if(condition, t, o) for t, o in zip(then_item, or_else_item)]
+
+    def python_value(self, item, solution):
+        return tuple(i.evaluate(solution) for i in item)
+
+
 class StringShape(SingletonShape):
     pass
 
@@ -129,7 +143,11 @@ def _function_value(function: 'Function'):
     return Value({FunctionShape(function): Box(None)})
 
 
-_none_value = _boolean_value(false)
+def _tuple_value(items: List[Value]):
+    return Value({TupleShape(len(items)): Box(items)})
+
+
+_none_value = _tuple_value([])
 
 
 def _if(condition: Expr, then: Value, or_else: Value) -> Value:
@@ -569,6 +587,10 @@ def run_expression(node: ast.expr, state: ExecutionState) -> Value:
             value = call_special(special_name, [value, right_value], state)
 
         return value
+    elif isinstance(node, ast.Tuple):
+        values = [run_expression(i, state) for i in node.elts]
+
+        return _tuple_value(values)
     elif isinstance(node, ast.Call):
         function_value = run_expression(node.func, state)
         args = [run_expression(i, state) for i in node.args]
