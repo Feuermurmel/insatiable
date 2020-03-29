@@ -271,6 +271,17 @@ class ExprSolution:
         else:
             assert False
 
+    def __repr__(self):
+        # Build tuples which allows us to easily sort the variables by name.
+        items = [
+            (var.name, '' if value else '~')
+            for var, value in self.values_by_var.items()]
+
+        values_str = \
+            ''.join(f' {prefix}{name}' for name, prefix in sorted(items))
+
+        return f'<ExprSolution{values_str}>'
+
 
 def solve_expr(expr: Expr) -> Optional[ExprSolution]:
     """
