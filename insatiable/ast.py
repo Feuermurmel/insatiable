@@ -289,8 +289,10 @@ class ExecutionState:
     always disjoint.
     """
 
-    def __init__(self):
+    def __init__(self, initial_scope):
         self.slice = true
+        self.scope = initial_scope
+
         self.return_variable = Variable()
         self.exception_variable = Variable()
 
@@ -323,9 +325,18 @@ class ExecutionState:
         # slice.
         self.slice |= excluded_slice
 
+    @contextlib.contextmanager
+    def with_scope(self, scope):
+        saved_scope = self.scope
+        self.scope = scope
 
-def read_variable(name: str, scope: Scope, state: ExecutionState) -> Value:
-    variable = scope.find_variable(name)
+        yield
+
+        self.scope = saved_scope
+
+
+def read_variable(name: str, state: ExecutionState) -> Value:
+    variable = state.scope.find_variable(name)
 
     if variable is None:
         # Basically, we're trying to mimic Python's behavior here. A variable
@@ -344,7 +355,7 @@ def read_variable(name: str, scope: Scope, state: ExecutionState) -> Value:
     return variable.value
 
 
-def write_variable(name: str, value: Value, scope: Scope, state: ExecutionState):
+def write_variable(name: str, value: Value, state: ExecutionState):
     # TODO: I think we could optimize this _if() call away in many cases. If
     #  we record in what slice a scope was created, we know that that scope
     #  could only ever contain values with that slice. If we then set a value
@@ -352,7 +363,7 @@ def write_variable(name: str, value: Value, scope: Scope, state: ExecutionState)
 
     # We know for sure that there's a scope containing this variable. The
     # scope is resolved beforehand.
-    scope.find_variable(name).write(value, state.slice)
+    state.scope.find_variable(name).write(value, state.slice)
 
 
 def get_function_returns_constant(node: ast.FunctionDef):
@@ -407,11 +418,12 @@ def run_function(function: Function, args: List[Value], state: ExecutionState):
         else:
             scope = _collect_scope(function.node, function.closure_scope)
 
-            # Write arguments to the function's scope.
-            for n, a in zip(arg_names, args):
-                write_variable(n, a, scope, state)
+            with state.with_scope(scope):
+                # Write arguments to the function's scope.
+                for n, a in zip(arg_names, args):
+                    write_variable(n, a, state)
 
-            run_block(function.node.body, scope, state)
+                run_block(function.node.body, state)
 
             # Handle falling out of the function without a return statement.
             state.set_return(_none_value)
@@ -445,11 +457,11 @@ def run_call(fn_value: Value, args: List[Value], state: ExecutionState) -> Value
     return return_variable.value
 
 
-def call_special(name: str, args: List[Value], scope: Scope, state: ExecutionState) -> Value:
-    return run_call(read_variable(name, scope, state), args, state)
+def call_special(name: str, args: List[Value], state: ExecutionState) -> Value:
+    return run_call(read_variable(name, state), args, state)
 
 
-def run_expression(node: ast.expr, scope: Scope, state: ExecutionState) -> Value:
+def run_expression(node: ast.expr, state: ExecutionState) -> Value:
     if isinstance(node, ast.Constant):
         if node.value is True:
             return _boolean_value(true)
@@ -458,35 +470,35 @@ def run_expression(node: ast.expr, scope: Scope, state: ExecutionState) -> Value
         else:
             error(f'Unhandled constant: {node.value}', node)
     elif isinstance(node, ast.Name):
-        return read_variable(node.id, scope, state)
+        return read_variable(node.id, state)
     elif isinstance(node, ast.UnaryOp):
         if isinstance(node.op, ast.Not):
-            value = run_expression(node.operand, scope, state)
+            value = run_expression(node.operand, state)
 
-            return call_special('__not__', [value], scope, state)
+            return call_special('__not__', [value], state)
         else:
             error(f'Unsupported unary operation.', node)
     elif isinstance(node, ast.BoolOp):
         special_name = {ast.And: '__and__', ast.Or: '__or__'}[type(node.op)]
         first_node, *rest = node.values
 
-        value = run_expression(first_node, scope, state)
+        value = run_expression(first_node, state)
 
         for i in rest:
-            right_value = run_expression(i, scope, state)
-            value = call_special(special_name, [value, right_value], scope, state)
+            right_value = run_expression(i, state)
+            value = call_special(special_name, [value, right_value], state)
 
         return value
     elif isinstance(node, ast.Call):
-        function_value = run_expression(node.func, scope, state)
-        args = [run_expression(i, scope, state) for i in node.args]
+        function_value = run_expression(node.func, state)
+        args = [run_expression(i, state) for i in node.args]
 
         return run_call(function_value, args, state)
     else:
         fail_unhandled_node(node)
 
 
-def run_block(stmts: List[ast.stmt], scope: Scope, state: ExecutionState):
+def run_block(stmts: List[ast.stmt], state: ExecutionState):
     for stmt in stmts:
         if isinstance(stmt, ast.ImportFrom):
             assert stmt.module == 'insatiable'
@@ -496,15 +508,15 @@ def run_block(stmts: List[ast.stmt], scope: Scope, state: ExecutionState):
 
                 # Anything which can be imported from the `insatiable` module
                 # already lives in the module scope under a special name.
-                value = read_variable(f'__insatiable_{alias.name}__', scope, state)
+                value = read_variable(f'__insatiable_{alias.name}__', state)
 
-                write_variable(local_name, value, scope, state)
+                write_variable(local_name, value, state)
         elif isinstance(stmt, ast.Assert):
             if stmt.msg is not None:
                 error('A message in an assert statement is not supported.', stmt.msg)
 
-            test_value = run_expression(stmt.test, scope, state)
-            call_special('__assert__', [test_value], scope, state)
+            test_value = run_expression(stmt.test, state)
+            call_special('__assert__', [test_value], state)
         elif isinstance(stmt, ast.Raise):
             if stmt.cause is not None:
                 error('A cause in a raise statement is not supported.', stmt.cause)
@@ -514,38 +526,38 @@ def run_block(stmts: List[ast.stmt], scope: Scope, state: ExecutionState):
                 # an active exception deviates from Python's behavior.
                 value = _none_value
             else:
-                value = run_expression(stmt.exc, scope, state)
+                value = run_expression(stmt.exc, state)
 
             state.add_print_call('Exception raised:', value)
             state.set_exception(value)
         elif isinstance(stmt, ast.Assign):
             for target in stmt.targets:
                 if isinstance(target, ast.Name):
-                    value = run_expression(stmt.value, scope, state)
+                    value = run_expression(stmt.value, state)
 
-                    write_variable(target.id, value, scope, state)
+                    write_variable(target.id, value, state)
                 else:
                     fail_unhandled_node(stmt.target)
         elif isinstance(stmt, ast.If):
-            condition_value = run_expression(stmt.test, scope, state)
+            condition_value = run_expression(stmt.test, state)
             condition = _boolean(condition_value)
 
             with state.with_condition(condition):
-                run_block(stmt.body, scope, state)
+                run_block(stmt.body, state)
 
             with state.with_condition(~condition):
-                run_block(stmt.orelse, scope, state)
+                run_block(stmt.orelse, state)
         elif isinstance(stmt, ast.FunctionDef):
             # In the execution context where the function is instantiated,
             # it has no further conditions. When the variable is assigned,
             # the condition of the current execution context is applied.
-            value = _function_value(Function(stmt, scope))
+            value = _function_value(Function(stmt, state.scope))
 
-            write_variable(stmt.name, value, scope, state)
+            write_variable(stmt.name, value, state)
         elif isinstance(stmt, ast.Expr):
-            run_expression(stmt.value, scope, state)
+            run_expression(stmt.value, state)
         elif isinstance(stmt, ast.Return):
-            state.set_return(run_expression(stmt.value, scope, state))
+            state.set_return(run_expression(stmt.value, state))
         elif isinstance(stmt, (ast.Global, ast.Nonlocal, ast.Pass)):
             pass
         else:
@@ -573,13 +585,12 @@ def solve_module(module: Module) -> Optional[InsatiableSolution]:
             body=_builtins_module.node.body + module.node.body,
             type_ignores=[])
 
-        state = ExecutionState()
-        module_scope = _collect_scope(merged_module_ast, None)
+        state = ExecutionState(_collect_scope(merged_module_ast, None))
 
-        run_block(merged_module_ast.body, module_scope, state)
+        run_block(merged_module_ast.body, state)
 
         # The global variable __invariants__ should be set in all slices.
-        invariants = _boolean(read_variable(_global_invariants, module_scope, state))
+        invariants = _boolean(read_variable(_global_invariants, state))
 
         exception_variable = state.exception_variable
         print_calls = state.print_calls
