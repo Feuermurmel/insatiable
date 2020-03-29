@@ -1,0 +1,39 @@
+__invariants__ = True
+
+
+def __insatiable_invariant__(x):
+    global __invariants__
+
+    if not x:
+        __invariants__ = False
+
+
+def __assert__(x):
+    if not x:
+        raise
+
+
+def __not__(x):
+    if x:
+        return False
+
+    return True
+
+
+def __and__(a, b):
+    if a:
+        return b
+
+    return a
+
+
+def __or__(a, b):
+    if a:
+        return a
+
+    return b
+
+
+# Implementation inserted by the runtime.
+def bool() -> '__bool__': pass
+def print() -> '__print__': pass

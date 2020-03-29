@@ -1,24 +1,23 @@
 import argparse
+import pathlib
 import sys
 
-
-def log(message):
-    print(message, file=sys.stderr, flush=True)
-
-
-class UserError(Exception):
-    def __init__(self, message, *args):
-        super().__init__(message.format(*args))
+from insatiable.ast import load_insat_module, run_module
+from insatiable.util import log, UserError
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
 
+    parser.add_argument(
+        'file',
+        type=pathlib.Path)
+
     return parser.parse_args()
 
 
-def main():
-    pass
+def main(file):
+    run_module(load_insat_module(file))
 
 
 def entry_point():
