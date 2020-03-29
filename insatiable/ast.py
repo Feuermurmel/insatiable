@@ -55,28 +55,6 @@ class Value:
 
         return f'<Value{parts_str}>'
 
-    @property
-    def assigned_slice(self):
-        """
-        The slice in which the variable represented by this instance has been
-        assigned to. Outside that slice, accessing the variable produces an
-        error.
-
-        For instances which do not represent the value of a variable,
-        the semantics of this are very vague and mostly a distraction.
-        """
-
-        slices = [self.boolean_slice, *(s for _, s in self.functions)]
-
-        return or_all(slices)
-
-
-"""
-Value of a variables whose value has not yet been assigned, for which
-anything is possible.
-"""
-_empty_value = Value(false, false, [])
-
 
 def _boolean_value(value: Expr):
     return Value(value, true, [])
@@ -119,36 +97,74 @@ def _boolean(value: Value) -> Expr:
     return or_all(exprs)
 
 
+class Variable:
+    """
+    Represents a variable in a Python scope. The variable may or may not have
+    been assigned to in a certain slice.
+
+    `self.value` contains the value of the variable. This only has a defined
+    value when `assigned_slice` is true.
+
+    `self.slice` is the slice in which the variable represented by this
+    instance has been assigned to. Outside that slice, accessing the variable
+    produces an error.
+    """
+
+    def __init__(self):
+        self.value = _none_value
+        self.assigned_slice = false
+
+    def __repr__(self):
+        def iter_parts():
+            if self.assigned_slice != false:
+                yield f'value={self.value}'
+
+            yield f'assigned_slice={self.assigned_slice}'
+
+        parts_str = ' '.join(iter_parts())
+
+        return f'<Variable {parts_str}>'
+
+    def write(self, value: Value, slice: Expr):
+        self.value = _if(slice, value, self.value)
+        self.assigned_slice |= slice
+
+
 class Scope:
     """
-    Represents the local scope of a function or the scope of a module. It
-    contains the names of variables that are part of this scope as well as
-    the values of variables which have been set.
-
-    In addition to that, it contains a reference to the parent scope, i.e.
-    the scope in which the function using this scope was defined.
+    Represents the local scope of a function or the scope of a module.
     """
 
     def __init__(self, local_names: Set[str], global_names: Set[str], parent: Optional['Scope']):
-        self.values = {i: _empty_value for i in local_names}
-        self.globals = global_names
+        """
+        :param local_names:
+            The names of variables that are defined in this scope..
+        :param global_names:
+            Names variables from the global scope which which were made
+            visible in this scope using a `global` statement.
+        :param parent:
+            The parent scope. Referenced variables are looked up in that
+            scope if they are not found in the scope.
+        """
+
         self.parent = parent
 
-    def find_global_scope(self):
-        if self.parent is None:
-            return self
-        else:
-            return self.parent.find_global_scope()
+        global_scope = self
 
-    def find_scope_for_variable(self, name: str):
-        if name in self.values:
-            return self
-        elif name in self.globals:
-            return self.find_global_scope()
-        elif self.parent is None:
-            return None
-        else:
-            return self.parent.find_scope_for_variable(name)
+        while global_scope.parent is not None:
+            global_scope = global_scope.parent
+
+        self.variables = {
+            **{i: Variable() for i in local_names},
+            **{i: global_scope.variables[i] for i in global_names}}
+
+    def find_variable(self, name: str) -> Optional[Variable]:
+        variable = self.variables.get(name)
+
+        if variable is None and self.parent is not None:
+            return self.parent.find_variable(name)
+
+        return variable
 
 
 def _collect_scope(node, outer_scope: Optional[Scope]) -> Scope:
@@ -174,19 +190,21 @@ def _collect_scope(node, outer_scope: Optional[Scope]) -> Scope:
                 for i in stmt.names:
                     # outer_scope will not be None because we can't have a
                     # nonlocal statement on the module level.
-                    var_scope = outer_scope.find_scope_for_variable(i)
-
-                    if var_scope is None:
-                        error(f'Variable {i} not found in any outer scope.', stmt)
+                    if outer_scope.find_variable(i) is None:
+                        error(f'Variable {i} not found in any outer scope.',
+                              stmt)
 
                 nonlocal_names.extend(stmt.names)
             elif isinstance(stmt, ast.Global):
                 # outer_scope will not be None because we can't have a global
                 # statement on the module level.
-                global_scope = outer_scope.find_global_scope()
+                global_scope = outer_scope
+
+                while global_scope.parent is not None:
+                    global_scope = global_scope.parent
 
                 for i in stmt.names:
-                    if i not in global_scope.values:
+                    if i not in global_scope.variables:
                         error(f'Variable {i} is never assigned on the module '
                               f'level. Accessing it is not supported.', stmt)
 
@@ -273,8 +291,8 @@ class ExecutionState:
 
     def __init__(self):
         self.slice = true
-        self.return_value = _empty_value
-        self.exception_value = _empty_value
+        self.return_variable = Variable()
+        self.exception_variable = Variable()
 
         self.print_calls: List[Tuple[List[Union[Value, str]], Expr]] = []
 
@@ -284,11 +302,11 @@ class ExecutionState:
     def set_return(self, value):
         # Set the return value for the whole slice and, because of that,
         # remove the whole slice.
-        self.return_value = _if(self.slice, value, self.return_value)
+        self.return_variable.write(value, self.slice)
         self.slice = false
 
     def set_exception(self, value):
-        self.exception_value = _if(self.slice, value, self.exception_value)
+        self.exception_variable.write(value, self.slice)
         self.slice = false
 
     def add_print_call(self, *values: Union[Value, str]):
@@ -306,38 +324,35 @@ class ExecutionState:
         self.slice |= excluded_slice
 
 
-def read_variable(name: str, scope: Scope, state: ExecutionState):
-    var_scope = scope.find_scope_for_variable(name)
+def read_variable(name: str, scope: Scope, state: ExecutionState) -> Value:
+    variable = scope.find_variable(name)
 
-    if var_scope is None:
+    if variable is None:
         # Basically, we're trying to mimic Python's behavior here. A variable
         # can be read even when it's never written in any of the outer
         # scopes. Here we know that it is never written but handle it as if
         # it wasn't written _yet_.
-        value = _empty_value
-    else:
-        value = var_scope.values[name]
+        variable = Variable()
 
     # Catch slices in which the variable has not been assigned yet.
-    with state.with_condition(~value.assigned_slice):
+    with state.with_condition(~variable.assigned_slice):
         state.add_print_call(
-            f'Local variable \'{name}\' referenced before assignment.')
+            f'Variable \'{name}\' referenced before assignment.')
 
         state.set_exception(_none_value)
 
-    return value
+    return variable.value
 
 
 def write_variable(name: str, value: Value, scope: Scope, state: ExecutionState):
-    # We know for sure that there's a scope containing this variable. The
-    # scope is resolved beforehand.
-    scope = scope.find_scope_for_variable(name)
-
     # TODO: I think we could optimize this _if() call away in many cases. If
     #  we record in what slice a scope was created, we know that that scope
     #  could only ever contain values with that slice. If we then set a value
     #  for that slice, we know we're overwriting all values.
-    scope.values[name] = _if(state.slice, value, scope.values[name])
+
+    # We know for sure that there's a scope containing this variable. The
+    # scope is resolved beforehand.
+    scope.find_variable(name).write(value, state.slice)
 
 
 def get_function_returns_constant(node: ast.FunctionDef):
@@ -355,7 +370,7 @@ def get_function_returns_constant(node: ast.FunctionDef):
 def run_function(function: Function, args: List[Value], state: ExecutionState):
     """
     Runs the body of the function with a new scope and the argument assigned
-    to local variables. Leaves the return value in the return value of the
+    to local variables. Leaves the return value in the return variable of the
     state.
     """
 
@@ -405,8 +420,8 @@ def run_function(function: Function, args: List[Value], state: ExecutionState):
 def run_call(fn_value: Value, args: List[Value], state: ExecutionState) -> Value:
     # Save the return value from the current stack frame and prepare an empty
     # return value.
-    current_return_value = state.return_value
-    state.return_value = _empty_value
+    saved_return_variable = state.return_variable
+    state.return_variable = Variable()
 
     # Call all function values within the current slice. This will accumulate
     # the return and exception values in the state.
@@ -420,14 +435,14 @@ def run_call(fn_value: Value, args: List[Value], state: ExecutionState) -> Value
     state.add_print_call('Object is not callable:', fn_value)
     state.set_exception(_none_value)
 
-    value = state.return_value
+    return_variable = state.return_variable
 
     # Restore the return value and add to the slice what was removed by
     # returning a value.
-    state.return_value = current_return_value
-    state.slice |= value.assigned_slice
+    state.return_variable = saved_return_variable
+    state.slice |= return_variable.assigned_slice
 
-    return value
+    return return_variable.value
 
 
 def call_special(name: str, args: List[Value], scope: Scope, state: ExecutionState) -> Value:
@@ -563,8 +578,11 @@ def solve_module(module: Module) -> Optional[InsatiableSolution]:
 
         run_block(merged_module_ast.body, module_scope, state)
 
+        # The global variable __invariants__ should be set in all slices.
+        invariants = _boolean(read_variable(_global_invariants, module_scope, state))
+
+        exception_variable = state.exception_variable
         print_calls = state.print_calls
-        exception_value = state.exception_value
     except CompilationError as e:
         _, _, tb = sys.exc_info()
         traceback.print_tb(tb)
@@ -578,8 +596,6 @@ def solve_module(module: Module) -> Optional[InsatiableSolution]:
 
         log(f'{type(e).__name__}: {e}')
     else:
-        # The global variable __invariants__ should be set in all slices.
-        invariants = _boolean(module_scope.values[_global_invariants])
         solution = solve_expr(invariants)
 
         if solution is None:
@@ -611,7 +627,7 @@ def solve_module(module: Module) -> Optional[InsatiableSolution]:
 
                     yield [*iter_items()]
 
-            if solution(exception_value.boolean_slice):
+            if solution(exception_variable.assigned_slice):
                 yield ['An assertion failed.']
 
         return InsatiableSolution([*iter_print_calls()])
