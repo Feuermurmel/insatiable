@@ -182,15 +182,22 @@ def _if(condition: Expr, then: Value, or_else: Value) -> Value:
 
 def _boolean(value: Value) -> Expr:
     """
-    Map a boolean true value to true and anything else to false.
+    Coerce the specified value to a boolean value. This maps "falsy" values
+    (the boolean false constant and the empty tuple) to false and everything
+    else to true.
     """
 
-    sliced_value = value.boxes_by_shape.get(_boolean_shape)
+    truthy = true
 
-    if sliced_value is None:
-        return false
+    if (box := value.boxes_by_shape.get(_boolean_shape)) is not None:
+        # Remove the slice where the value in the box is not true.
+        truthy /= box.slice / box.item
 
-    return sliced_value.item & sliced_value.slice
+    if (box := value.boxes_by_shape.get(TupleShape(0))) is not None:
+        # Remove the whole slice for an empty tuple.
+        truthy /= box.slice
+
+    return truthy
 
 
 class Variable:
