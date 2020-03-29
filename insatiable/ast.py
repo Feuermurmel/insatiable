@@ -4,13 +4,12 @@ import importlib.resources
 import itertools
 import pathlib
 import sys
-import traceback
 from typing import Mapping, NamedTuple, Optional, NoReturn, Set, List, Tuple, \
     Union, Any
 
 from insatiable.expressions import Expr, var, true, false, solve_expr, ite, \
     ExprSolution
-from insatiable.util import Hashable, log
+from insatiable.util import Hashable
 
 
 class CompilationError(SyntaxError):
@@ -768,18 +767,16 @@ def solve_module(module: Module) -> Optional[InsatiableSolution]:
 
         exception_variable = state.exception_variable
         print_calls = state.print_calls
-    except CompilationError as e:
-        _, _, tb = sys.exc_info()
-        traceback.print_tb(tb)
-
-        node = e.node
+    except CompilationError as exception:
+        node = exception.node
         line = node.source.splitlines()[node.lineno - 1]
 
-        log(f'  File "{node.source_name}", line {node.lineno}')
-        log('    ' + line)
-        log('    ' + ' ' * node.col_offset + '^')
+        # We add one because it seems that the column offsets of ast nodes
+        # are zero-based while the code formatting a SyntaxError expects a
+        # one-based index.
+        data = (node.source_name, node.lineno, node.col_offset + 1, line)
 
-        log(f'{type(e).__name__}: {e}')
+        raise SyntaxError(exception, data) from None
     else:
         solution = solve_expr(invariants)
 
