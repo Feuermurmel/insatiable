@@ -314,6 +314,35 @@ class ExecutionState:
     def add_print_call(self, *values: Union[Value, str]):
         self.print_calls.append(([*values], self.slice))
 
+    def read_variable(self, name: str) -> Value:
+        variable = self.scope.find_variable(name)
+
+        if variable is None:
+            # Basically, we're trying to mimic Python's behavior here. A
+            # variable can be read even when it's never written in any of the
+            # outer scopes. Here we know that it is never written but handle
+            # it as if it wasn't written _yet_.
+            variable = Variable()
+
+        # Catch slices in which the variable has not been assigned yet.
+        with self.with_condition(~variable.assigned_slice):
+            self.add_print_call(
+                f'Variable \'{name}\' referenced before assignment.')
+
+            self.set_exception(_none_value)
+
+        return variable.value
+
+    def write_variable(self, name: str, value: Value):
+        # TODO: I think we could optimize this _if() call away in many cases.
+        #  If we record in what slice a scope was created, we know that that
+        #  scope could only ever contain values with that slice. If we then
+        #  set a value for that slice, we know we're overwriting all values.
+
+        # We know for sure that there's a scope containing this variable. The
+        # scope is resolved beforehand.
+        self.scope.find_variable(name).write(value, self.slice)
+
     @contextlib.contextmanager
     def with_condition(self, condition):
         excluded_slice = self.slice / condition
@@ -333,37 +362,6 @@ class ExecutionState:
         yield
 
         self.scope = saved_scope
-
-
-def read_variable(name: str, state: ExecutionState) -> Value:
-    variable = state.scope.find_variable(name)
-
-    if variable is None:
-        # Basically, we're trying to mimic Python's behavior here. A variable
-        # can be read even when it's never written in any of the outer
-        # scopes. Here we know that it is never written but handle it as if
-        # it wasn't written _yet_.
-        variable = Variable()
-
-    # Catch slices in which the variable has not been assigned yet.
-    with state.with_condition(~variable.assigned_slice):
-        state.add_print_call(
-            f'Variable \'{name}\' referenced before assignment.')
-
-        state.set_exception(_none_value)
-
-    return variable.value
-
-
-def write_variable(name: str, value: Value, state: ExecutionState):
-    # TODO: I think we could optimize this _if() call away in many cases. If
-    #  we record in what slice a scope was created, we know that that scope
-    #  could only ever contain values with that slice. If we then set a value
-    #  for that slice, we know we're overwriting all values.
-
-    # We know for sure that there's a scope containing this variable. The
-    # scope is resolved beforehand.
-    state.scope.find_variable(name).write(value, state.slice)
 
 
 def get_function_returns_constant(node: ast.FunctionDef):
@@ -421,7 +419,7 @@ def run_function(function: Function, args: List[Value], state: ExecutionState):
             with state.with_scope(scope):
                 # Write arguments to the function's scope.
                 for n, a in zip(arg_names, args):
-                    write_variable(n, a, state)
+                    state.write_variable(n, a)
 
                 run_block(function.node.body, state)
 
@@ -458,7 +456,7 @@ def run_call(fn_value: Value, args: List[Value], state: ExecutionState) -> Value
 
 
 def call_special(name: str, args: List[Value], state: ExecutionState) -> Value:
-    return run_call(read_variable(name, state), args, state)
+    return run_call(state.read_variable(name), args, state)
 
 
 def run_expression(node: ast.expr, state: ExecutionState) -> Value:
@@ -470,7 +468,7 @@ def run_expression(node: ast.expr, state: ExecutionState) -> Value:
         else:
             error(f'Unhandled constant: {node.value}', node)
     elif isinstance(node, ast.Name):
-        return read_variable(node.id, state)
+        return state.read_variable(node.id)
     elif isinstance(node, ast.UnaryOp):
         if isinstance(node.op, ast.Not):
             value = run_expression(node.operand, state)
@@ -508,9 +506,9 @@ def run_block(stmts: List[ast.stmt], state: ExecutionState):
 
                 # Anything which can be imported from the `insatiable` module
                 # already lives in the module scope under a special name.
-                value = read_variable(f'__insatiable_{alias.name}__', state)
+                value = state.read_variable(f'__insatiable_{alias.name}__')
 
-                write_variable(local_name, value, state)
+                state.write_variable(local_name, value)
         elif isinstance(stmt, ast.Assert):
             if stmt.msg is not None:
                 error('A message in an assert statement is not supported.', stmt.msg)
@@ -535,7 +533,7 @@ def run_block(stmts: List[ast.stmt], state: ExecutionState):
                 if isinstance(target, ast.Name):
                     value = run_expression(stmt.value, state)
 
-                    write_variable(target.id, value, state)
+                    state.write_variable(target.id, value)
                 else:
                     fail_unhandled_node(stmt.target)
         elif isinstance(stmt, ast.If):
@@ -553,7 +551,7 @@ def run_block(stmts: List[ast.stmt], state: ExecutionState):
             # the condition of the current execution context is applied.
             value = _function_value(Function(stmt, state.scope))
 
-            write_variable(stmt.name, value, state)
+            state.write_variable(stmt.name, value)
         elif isinstance(stmt, ast.Expr):
             run_expression(stmt.value, state)
         elif isinstance(stmt, ast.Return):
@@ -590,7 +588,7 @@ def solve_module(module: Module) -> Optional[InsatiableSolution]:
         run_block(merged_module_ast.body, state)
 
         # The global variable __invariants__ should be set in all slices.
-        invariants = _boolean(read_variable(_global_invariants, state))
+        invariants = _boolean(state.read_variable(_global_invariants))
 
         exception_variable = state.exception_variable
         print_calls = state.print_calls
