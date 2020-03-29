@@ -4,7 +4,8 @@ import importlib.resources
 import itertools
 import pathlib
 import sys
-from typing import NamedTuple, Optional, NoReturn, Set, List, Tuple, Union, Any
+from typing import NamedTuple, Optional, NoReturn, Set, List, Tuple, Union, \
+    Any, Iterable
 
 from insatiable.expressions import Expr, var, true, false, solve_expr, ite, \
     ExprSolution
@@ -488,6 +489,20 @@ class ExecutionState:
         # slice.
         self.slice |= excluded_slice
 
+    def on_each_box(self, value: Value) -> Iterable[Tuple[Shape, Any]]:
+        """
+        Iterate over all boxes in the specified value, yielding the shape and
+        item of each box. While iterating, the slice of this execution state
+        is updated to match the boxes' slice.
+
+        This method should always be iterated in it's entirety and only using
+        a for, without breaking out of the loop or throwing an exception.
+        """
+
+        for box in value.boxes:
+            for _ in self.on_condition(box.slice):
+                yield box.shape, box.item
+
     @contextlib.contextmanager
     def with_scope(self, scope):
         saved_scope = self.scope
@@ -568,12 +583,9 @@ def run_call(fn_value: Value, args: List[Value], state: ExecutionState) -> Value
 
     # Call all function values within the current slice. This will accumulate
     # the return and exception values in the state.
-    for box in fn_value.boxes:
-        if isinstance(box.shape, FunctionShape):
-            for _ in state.on_condition(box.slice):
-                # Try to optimize some obvious nonsense.
-                if state.slice != false:
-                    run_function(box.shape.value, args, state)
+    for shape, item in state.on_each_box(fn_value):
+        if isinstance(shape, FunctionShape):
+            run_function(shape.value, args, state)
 
     # What is left is the slice where we did not have a function to call.
     state.add_print_call('Object is not callable:', fn_value)
@@ -648,52 +660,51 @@ def run_assignment(target: ast.expr, value: Value, state: ExecutionState):
         # Number of non-starred elements.
         target_len = len(target.elts) - len(starred_items)
 
-        for box in value.boxes:
-            for _ in state.on_condition(box.slice):
-                if not isinstance(box.shape, TupleShape):
-                    state.add_print_call('Can only unpack a tuple, got:', value)
+        for shape, item in state.on_each_box(value):
+            if not isinstance(shape, TupleShape):
+                state.add_print_call('Can only unpack a tuple, got:', value)
+                state.set_exception(_none_value)
+            elif starred_items:
+                (prefix_end, starred), *rest = starred_items
+                starred_len = shape.len - target_len
+
+                if rest:
+                    error('Multiple starred expressions.', target)
+
+                if starred_len < 0:
+                    state.add_print_call(
+                        f'Need a tuple with at least {target_len} elements, '
+                        f'got:', value)
                     state.set_exception(_none_value)
-                elif starred_items:
-                    (prefix_end, starred), *rest = starred_items
-                    starred_len = box.shape.len - target_len
-
-                    if rest:
-                        error('Multiple starred expressions.', target)
-
-                    if starred_len < 0:
-                        state.add_print_call(
-                            f'Need a tuple with at least {target_len} '
-                            f'elements, got:', value)
-                        state.set_exception(_none_value)
-                    else:
-                        target_suffix_start = prefix_end + 1
-                        value_suffix_start = prefix_end + starred_len
-
-                        target_prefix = target.elts[:prefix_end]
-                        value_prefix = box.item[:prefix_end]
-
-                        for t, v in zip(target_prefix, value_prefix):
-                            run_assignment(t, v, state)
-
-                        value_starred = _tuple_value(
-                            box.item[prefix_end:value_suffix_start])
-
-                        run_assignment(starred.value, value_starred, state)
-
-                        target_suffix = target.elts[target_suffix_start:]
-                        item_suffix = box.item[value_suffix_start:]
-
-                        for t, v in zip(target_suffix, item_suffix):
-                            run_assignment(t, v, state)
                 else:
-                    if box.shape.len != target_len:
-                        state.add_print_call(
-                            f'Need a tuple with exactly {target_len} '
-                            f'elements, got:', value)
-                        state.set_exception(_none_value)
-                    else:
-                        for element, value in zip(target.elts, box.item):
-                            run_assignment(element, value, state)
+                    target_suffix_start = prefix_end + 1
+                    value_suffix_start = prefix_end + starred_len
+
+                    target_prefix = target.elts[:prefix_end]
+                    value_prefix = item[:prefix_end]
+
+                    for t, v in zip(target_prefix, value_prefix):
+                        run_assignment(t, v, state)
+
+                    value_starred = \
+                        _tuple_value(item[prefix_end:value_suffix_start])
+
+                    run_assignment(starred.value, value_starred, state)
+
+                    target_suffix = target.elts[target_suffix_start:]
+                    item_suffix = item[value_suffix_start:]
+
+                    for t, v in zip(target_suffix, item_suffix):
+                        run_assignment(t, v, state)
+            else:
+                if shape.len != target_len:
+                    state.add_print_call(
+                        f'Need a tuple with exactly {target_len} elements, '
+                        f'got:', value)
+                    state.set_exception(_none_value)
+                else:
+                    for element, value in zip(target.elts, item):
+                        run_assignment(element, value, state)
     else:
         # Should already have failed in _collect_scope().
         assert False
