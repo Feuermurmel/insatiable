@@ -32,10 +32,43 @@ def fail_unhandled_node(node) -> NoReturn:
 
 class Shape(Hashable):
     def combine_items(self, condition: Expr, then_item, or_else_item):
+        """
+        Recursively merge the specified items, taking the value from
+        `then_item` in the slices where `condition` is true and the value
+        from `or_else_item` otherwise.
+        """
+
         raise NotImplementedError
 
-    def evaluate_item(self, item, solution: ExprSolution):
+    def python_value(self, item, solution: ExprSolution):
+        """
+        Evaluate the value in the slice given by the specified solution and
+        return it as a plain Python value.
+        """
+
         raise NotImplementedError
+
+
+class SingletonShape(Shape):
+    """
+    Base class for shapes which can only represent a single value and which
+    need a separate box for different values.
+
+    The item of a box with this shape will always be None.
+    """
+
+    def __init__(self, value):
+        self.value = value
+
+    def _hashable_key(self):
+        return self.value
+
+    def combine_items(self, condition, then_item, or_else_item):
+        return None
+
+    def python_value(self, item, solution):
+        # TODO: Does this make sense?
+        return self.value
 
 
 class BooleanShape(Shape):
@@ -45,25 +78,15 @@ class BooleanShape(Shape):
     def combine_items(self, condition, then_item, or_else_item):
         return ite(condition, then_item, or_else_item)
 
-    def evaluate_item(self, item, solution):
+    def python_value(self, item, solution):
         return solution(item)
 
 
 _boolean_shape = BooleanShape()
 
 
-class FunctionShape(Shape):
-    def __init__(self, function: 'Function'):
-        self.function = function
-
-    def _hashable_key(self):
-        return self.function
-
-    def combine_items(self, condition, then_item, or_else_item):
-        return None
-
-    def evaluate_item(self, item, solution):
-        return item
+class FunctionShape(SingletonShape):
+    pass
 
 
 class Box(NamedTuple):
@@ -86,7 +109,7 @@ class Value:
     def evaluate(self, solution: ExprSolution):
         for shape, box in self.boxes_by_shape.items():
             if solution(box.slice):
-                return shape.evaluate_item(box.item, solution)
+                return shape.python_value(box.item, solution)
         else:
             assert False
 
@@ -489,7 +512,7 @@ def run_call(fn_value: Value, args: List[Value], state: ExecutionState) -> Value
             with state.with_condition(box.slice):
                 # Try to optimize some obvious nonsense.
                 if state.slice != false:
-                    run_function(shape.function, args, state)
+                    run_function(shape.value, args, state)
 
     # What is left is the slice where we did not have a function to call.
     state.add_print_call('Object is not callable:', fn_value)
