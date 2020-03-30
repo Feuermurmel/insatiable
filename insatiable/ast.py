@@ -642,9 +642,34 @@ def run_expression(node: ast.expr, state: ExecutionState) -> Value:
 
         return value
     elif isinstance(node, ast.Tuple):
-        values = [run_expression(i, state) for i in node.elts]
+        # Value to which all values and unpacked tuples are appended.
+        result_value = _tuple_value([])
 
-        return _tuple_value(values)
+        for i in node.elts:
+            if isinstance(i, ast.Starred):
+                value = run_expression(i.value, state)
+            else:
+                value = _tuple_value([run_expression(i, state)])
+
+            # We want to start off with a tuple here, even though this value
+            # will be overwritten in all slices of the execution state. But
+            # we can't guarantee that on_each_box() won't iterate over boxes
+            # with a slice outside the state's slice.
+            new_value = _tuple_value([])
+
+            for _, tuple_item in state.on_each_box(result_value):
+                for shape, item in state.on_each_box(value):
+                    if not isinstance(shape, TupleShape):
+                        state.add_print_call(
+                            'Can only unpack a tuple, got:', value)
+                        state.set_exception(_none_value)
+                    else:
+                        x = _tuple_value(tuple_item + item)
+                        new_value = _if(state.slice, x, new_value)
+
+            result_value = new_value
+
+        return result_value
     elif isinstance(node, ast.Call):
         function_value = run_expression(node.func, state)
         args = [run_expression(i, state) for i in node.args]
