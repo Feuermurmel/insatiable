@@ -12,4 +12,5 @@ setuptools.setup(
     extras_require={'dev': dependencies_dev},
     setup_requires=['setuptools>=42', 'wheel', 'setuptools_scm[toml]>=3.4'],
     use_scm_version=True,
+    include_package_data=True,
     packages=setuptools.find_packages(exclude=['tests']))
