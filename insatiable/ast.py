@@ -106,6 +106,7 @@ class FunctionShape(SingletonShape):
     pass
 
 
+# TODO: Maybe add Shape as member to this type and use List[Box] to hold the values in Value.
 class Box(NamedTuple):
     item: Any
     slice: Expr = true
@@ -269,6 +270,17 @@ def _collect_scope(node, outer_scope: Optional[Scope]) -> Scope:
     nonlocal_names = []
     global_names = []
 
+    def collect_assignment_target(target: ast.expr):
+        if isinstance(target, ast.Name):
+            names.append(target.id)
+        elif isinstance(target, ast.Tuple):
+            for i in target.elts:
+                collect_assignment_target(i)
+        elif isinstance(target, ast.Starred):
+            collect_assignment_target(target.value)
+        else:
+            fail_unhandled_node(target)
+
     if isinstance(node, ast.FunctionDef):
         names.extend(i.arg for i in node.args.args)
 
@@ -307,8 +319,8 @@ def _collect_scope(node, outer_scope: Optional[Scope]) -> Scope:
 
                 global_names.extend(stmt.names)
             elif isinstance(stmt, ast.Assign):
-                names.extend(
-                    i.id for i in stmt.targets if isinstance(i, ast.Name))
+                for i in stmt.targets:
+                    collect_assignment_target(i)
             elif isinstance(stmt, (ast.If, ast.While, ast.For)):
                 walk_block(stmt.body)
                 walk_block(stmt.orelse)
@@ -600,6 +612,69 @@ def run_expression(node: ast.expr, state: ExecutionState) -> Value:
         fail_unhandled_node(node)
 
 
+def run_assignment(target: ast.expr, value: Value, state: ExecutionState):
+    if isinstance(target, ast.Name):
+        state.write_variable(target.id, value)
+    elif isinstance(target, ast.Tuple):
+        starred_items = [
+            (i, e)
+            for i, e in enumerate(target.elts)
+            if isinstance(e, ast.Starred)]
+
+        # Number of non-starred elements.
+        target_len = len(target.elts) - len(starred_items)
+
+        for shape, box in value.boxes_by_shape.items():
+            with state.with_condition(box.slice):
+                if not isinstance(shape, TupleShape):
+                    state.add_print_call('Can only unpack a tuple, got:', value)
+                    state.set_exception(_none_value)
+                elif starred_items:
+                    (prefix_end, starred), *rest = starred_items
+                    starred_len = shape.len - target_len
+
+                    if rest:
+                        error('Multiple starred expressions.', target)
+
+                    if starred_len < 0:
+                        state.add_print_call(
+                            f'Need a tuple with at least {target_len} '
+                            f'elements, got:', value)
+                        state.set_exception(_none_value)
+                    else:
+                        target_suffix_start = prefix_end + 1
+                        value_suffix_start = prefix_end + starred_len
+
+                        target_prefix = target.elts[:prefix_end]
+                        value_prefix = box.item[:prefix_end]
+
+                        for t, v in zip(target_prefix, value_prefix):
+                            run_assignment(t, v, state)
+
+                        value_starred = _tuple_value(
+                            box.item[prefix_end:value_suffix_start])
+
+                        run_assignment(starred.value, value_starred, state)
+
+                        target_suffix = target.elts[target_suffix_start:]
+                        item_suffix = box.item[value_suffix_start:]
+
+                        for t, v in zip(target_suffix, item_suffix):
+                            run_assignment(t, v, state)
+                else:
+                    if shape.len != target_len:
+                        state.add_print_call(
+                            f'Need a tuple with exactly {target_len} '
+                            f'elements, got:', value)
+                        state.set_exception(_none_value)
+                    else:
+                        for element, value in zip(target.elts, box.item):
+                            run_assignment(element, value, state)
+    else:
+        # Should already have failed in _collect_scope().
+        assert False
+
+
 def run_block(stmts: List[ast.stmt], state: ExecutionState):
     for stmt in stmts:
         if isinstance(stmt, ast.ImportFrom):
@@ -633,13 +708,10 @@ def run_block(stmts: List[ast.stmt], state: ExecutionState):
             state.add_print_call('Exception raised:', value)
             state.set_exception(value)
         elif isinstance(stmt, ast.Assign):
-            for target in stmt.targets:
-                if isinstance(target, ast.Name):
-                    value = run_expression(stmt.value, state)
+            value = run_expression(stmt.value, state)
 
-                    state.write_variable(target.id, value)
-                else:
-                    fail_unhandled_node(stmt.target)
+            for target in stmt.targets:
+                run_assignment(target, value, state)
         elif isinstance(stmt, ast.If):
             condition_value = run_expression(stmt.test, state)
             condition = _boolean(condition_value)
