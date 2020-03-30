@@ -67,7 +67,6 @@ class SingletonShape(Shape):
         return None
 
     def python_value(self, item, solution):
-        # TODO: Does this make sense?
         return self.value
 
 
@@ -83,6 +82,10 @@ class BooleanShape(Shape):
 
 
 _boolean_shape = BooleanShape()
+
+
+class StringShape(SingletonShape):
+    pass
 
 
 class FunctionShape(SingletonShape):
@@ -116,6 +119,10 @@ class Value:
 
 def _boolean_value(value: Expr):
     return Value({_boolean_shape: Box(value)})
+
+
+def _string_value(value: str):
+    return Value({StringShape(value): Box(None)})
 
 
 def _function_value(function: 'Function'):
@@ -538,6 +545,8 @@ def run_expression(node: ast.expr, state: ExecutionState) -> Value:
             return _boolean_value(true)
         elif node.value is False:
             return _boolean_value(false)
+        elif isinstance(node.value, str):
+            return _string_value(node.value)
         else:
             error(f'Unhandled constant: {node.value}', node)
     elif isinstance(node, ast.Name):
