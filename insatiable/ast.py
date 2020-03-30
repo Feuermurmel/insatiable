@@ -435,7 +435,7 @@ class ExecutionState:
         self.return_variable = Variable()
         self.exception_variable = Variable()
 
-        self.print_calls: List[Tuple[List[Union[Value, str]], Expr]] = []
+        self.print_calls: List[Tuple[List[Value], Expr]] = []
 
     def __repr__(self):
         return f'<ExecutionState slice={self.slice}>'
@@ -447,11 +447,16 @@ class ExecutionState:
         self.slice = false
 
     def set_exception(self, value):
+        # TODO: Somehow also capture the location.
         self.exception_variable.write(value, self.slice)
         self.slice = false
 
     def add_print_call(self, *message: Union[Value, str]):
-        self.print_calls.append(([*message], self.slice))
+        values = [
+            _string_value(i) if isinstance(i, str) else i
+            for i in message]
+
+        self.print_calls.append((values, self.slice))
 
     def read_variable(self, name: str) -> Value:
         variable = self.scope.find_variable(name)
@@ -851,11 +856,9 @@ def solve_module(module: Module) -> Optional[InsatiableSolution]:
             return None
 
         def iter_print_calls():
-            for items, slice in print_calls:
+            for values, slice in print_calls:
                 if solution(slice):
-                    yield [
-                        j.evaluate(solution) if isinstance(j, Value) else j
-                        for j in items]
+                    yield [i.evaluate(solution) for i in values]
 
             if solution(exception_variable.assigned_slice):
                 yield ['An assertion failed.']
