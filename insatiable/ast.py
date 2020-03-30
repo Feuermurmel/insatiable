@@ -19,6 +19,12 @@ class CompilationError(SyntaxError):
         self.node = node
 
 
+class UnsatisfiableError(Exception):
+    """
+    Raised by `run_module()` when no solution was found to run.
+    """
+
+
 def error(message, node) -> NoReturn:
     assert isinstance(node, (ast.stmt, ast.expr)), node
 
@@ -836,6 +842,6 @@ def run_module(module: Module):
     solution = solve_module(module)
 
     if solution is None:
-        print('No solutions found.')
-    else:
-        solution.run()
+        raise UnsatisfiableError('No solutions found.')
+
+    solution.run()
