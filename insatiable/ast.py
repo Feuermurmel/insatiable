@@ -4,8 +4,7 @@ import importlib.resources
 import itertools
 import pathlib
 import sys
-from typing import Mapping, NamedTuple, Optional, NoReturn, Set, List, Tuple, \
-    Union, Any
+from typing import NamedTuple, Optional, NoReturn, Set, List, Tuple, Union, Any
 
 from insatiable.expressions import Expr, var, true, false, solve_expr, ite, \
     ExprSolution
@@ -105,79 +104,97 @@ class FunctionShape(SingletonShape):
     pass
 
 
-# TODO: Maybe add Shape as member to this type and use List[Box] to hold the values in Value.
 class Box(NamedTuple):
+    shape: Shape
     item: Any
     slice: Expr = true
 
 
 class Value:
-    def __init__(self, boxes_by_shape: Mapping[Shape, Box]):
+    def __init__(self, boxes: List[Box]):
         """
         All slices must be pair-wise disjoint and sum to `true`.
-        `boolean_value` must imply `boolean_slice`.
         """
 
-        self.boxes_by_shape = boxes_by_shape
+        self.boxes = boxes
 
     def __repr__(self):
-        return f'Value({self.boxes_by_shape})'
+        return f'Value({self.boxes})'
 
     def evaluate(self, solution: ExprSolution):
-        for shape, box in self.boxes_by_shape.items():
+        for box in self.boxes:
             if solution(box.slice):
-                return shape.python_value(box.item, solution)
+                return box.shape.python_value(box.item, solution)
         else:
             assert False
 
 
 def _boolean_value(value: Expr):
-    return Value({_boolean_shape: Box(value)})
+    return Value([Box(_boolean_shape, value)])
 
 
 def _string_value(value: str):
-    return Value({StringShape(value): Box(None)})
+    return Value([Box(StringShape(value), None)])
 
 
 def _function_value(function: 'Function'):
-    return Value({FunctionShape(function): Box(None)})
+    return Value([Box(FunctionShape(function), None)])
 
 
 def _tuple_value(items: List[Value]):
-    return Value({TupleShape(len(items)): Box(items)})
+    return Value([Box(TupleShape(len(items)), items)])
 
 
 _none_value = _tuple_value([])
 
 
 def _if(condition: Expr, then: Value, or_else: Value) -> Value:
+    """
+    Merge two `Value` instances by taking the values from `then` in the
+    slices specified by `condition` and the values from `or_else` in the rest
+    of the slices.
+    """
+
+    # Easy optimizations.
+    if condition == true:
+        return then
+
+    if condition == false:
+        return or_else
+
+    then_boxes = {i.shape: i for i in then.boxes}
+    or_else_boxes = {i.shape: i for i in or_else.boxes}
+
     def iter_new_boxes():
-        for shape in {*then.boxes_by_shape, *or_else.boxes_by_shape}:
-            then_box = then.boxes_by_shape.get(shape, Box(None, false))
-            or_else_box = or_else.boxes_by_shape.get(shape, Box(None, false))
+        # Iterate over all shapes, get the boxes for that shape and possibly
+        # merge the items.
+        for shape in {*then_boxes, *or_else_boxes}:
+            # The items in these dummy boxes are not used.
+            _, then_item, then_slice = \
+                then_boxes.get(shape, Box(..., ..., false))
 
-            then_slice = then_box.slice & condition
-            or_else_slice = or_else_box.slice / condition
+            _, or_else_item, or_else_slice = \
+                or_else_boxes.get(shape, Box(..., ..., false))
 
-            if then_slice != false:
+            then_slice &= condition
+            or_else_slice /= condition
+
+            if then_slice == false:
+                # No box is produced if both slices are now constant false.
                 if or_else_slice != false:
-                    item = shape.combine_items(
-                        condition,
-                        then_box.item,
-                        or_else_box.item)
+                    yield Box(shape, or_else_item, or_else_slice)
+            elif or_else_slice == false:
+                # TODO: Should we "thin" the items, i.e. remove cases in
+                #  nested values that don't overlap with the new slice
+                #  anymore?
+                yield Box(shape, then_item, then_slice)
+            else:
+                item = shape.combine_items(condition, then_item, or_else_item)
+                slice = ite(condition, then_slice, or_else_slice)
 
-                    slice = ite(condition, then_box.slice, or_else_box.slice)
+                yield Box(shape, item, slice)
 
-                    yield shape, Box(item, slice)
-                else:
-                    # TODO: Should we "thin" the items, i.e. remove cases in
-                    #  nested values that don't overlap with the new slice
-                    #  anymore?
-                    yield shape, Box(then_box.item, then_slice)
-            elif or_else_slice != false:
-                yield shape, Box(or_else_box.item, or_else_slice)
-
-    return Value(dict(iter_new_boxes()))
+    return Value([*iter_new_boxes()])
 
 
 def _boolean(value: Value) -> Expr:
@@ -187,15 +204,15 @@ def _boolean(value: Value) -> Expr:
     else to true.
     """
 
+    # Start with true and then remove slices where the value is either equal
+    # to `False` or `()`.
     truthy = true
 
-    if (box := value.boxes_by_shape.get(_boolean_shape)) is not None:
-        # Remove the slice where the value in the box is not true.
-        truthy /= box.slice / box.item
-
-    if (box := value.boxes_by_shape.get(TupleShape(0))) is not None:
-        # Remove the whole slice for an empty tuple.
-        truthy /= box.slice
+    for box in value.boxes:
+        if box.shape == _boolean_shape:
+            truthy /= box.slice / box.item
+        elif box.shape == TupleShape(0):
+            truthy /= box.slice
 
     return truthy
 
@@ -551,12 +568,12 @@ def run_call(fn_value: Value, args: List[Value], state: ExecutionState) -> Value
 
     # Call all function values within the current slice. This will accumulate
     # the return and exception values in the state.
-    for shape, box in fn_value.boxes_by_shape.items():
-        if isinstance(shape, FunctionShape):
+    for box in fn_value.boxes:
+        if isinstance(box.shape, FunctionShape):
             for _ in state.on_condition(box.slice):
                 # Try to optimize some obvious nonsense.
                 if state.slice != false:
-                    run_function(shape.value, args, state)
+                    run_function(box.shape.value, args, state)
 
     # What is left is the slice where we did not have a function to call.
     state.add_print_call('Object is not callable:', fn_value)
@@ -631,14 +648,14 @@ def run_assignment(target: ast.expr, value: Value, state: ExecutionState):
         # Number of non-starred elements.
         target_len = len(target.elts) - len(starred_items)
 
-        for shape, box in value.boxes_by_shape.items():
+        for box in value.boxes:
             for _ in state.on_condition(box.slice):
-                if not isinstance(shape, TupleShape):
+                if not isinstance(box.shape, TupleShape):
                     state.add_print_call('Can only unpack a tuple, got:', value)
                     state.set_exception(_none_value)
                 elif starred_items:
                     (prefix_end, starred), *rest = starred_items
-                    starred_len = shape.len - target_len
+                    starred_len = box.shape.len - target_len
 
                     if rest:
                         error('Multiple starred expressions.', target)
@@ -669,7 +686,7 @@ def run_assignment(target: ast.expr, value: Value, state: ExecutionState):
                         for t, v in zip(target_suffix, item_suffix):
                             run_assignment(t, v, state)
                 else:
-                    if shape.len != target_len:
+                    if box.shape.len != target_len:
                         state.add_print_call(
                             f'Need a tuple with exactly {target_len} '
                             f'elements, got:', value)
