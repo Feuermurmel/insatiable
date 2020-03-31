@@ -264,6 +264,10 @@ class Variable:
         self.value = _if(slice, value, self.value)
         self.assigned_slice |= slice
 
+    def unset(self, slice: Expr):
+        self.value = _if(slice, _none_value, self.value)
+        self.assigned_slice /= slice
+
 
 class Scope:
     """
@@ -463,6 +467,21 @@ class ExecutionState:
         self.exception_variable.write(_tuple_value(items), self.slice)
         self.slice = false
 
+    def clear_exception(self) -> Tuple[Value, Expr]:
+        """
+        Clear the currently thrown exception and add the slice in which an
+        exception was thrown back to this execution state's slice. The
+        exception value is returned together with its slice.
+        """
+
+        exception_value = self.exception_variable.value
+        exception_slice = self.exception_variable.assigned_slice
+
+        # Move the slice back from the variable to the execution state's slice.
+        self.slice |= exception_slice
+        self.exception_variable.unset(exception_slice)
+
+        return exception_value, exception_slice
 
     def add_output(self, parts: Value):
         self.output.append((parts, self.slice))
@@ -835,11 +854,13 @@ def solve_module(module: Module) -> Optional[InsatiableSolution]:
         # The global variable __invariants__ should be set in all slices.
         invariants = _boolean(state.read_variable(_global_invariants))
 
-        output = [
-            *state.output,
-            (
-                state.exception_variable.value,
-                state.exception_variable.assigned_slice)]
+        exception_value, exception_slice = state.clear_exception()
+
+        # Print an exception, if one was thrown.
+        for _ in state.on_condition(exception_slice):
+            state.add_output(exception_value)
+
+        output = state.output
     except CompilationError as exception:
         node = exception.node
         line = node.source.splitlines()[node.lineno - 1]
