@@ -8,7 +8,7 @@ from typing import NamedTuple, Optional, NoReturn, Set, List, Tuple, Union, \
     Any, Iterable
 
 from insatiable.expressions import Expr, var, true, false, solve_expr, ite, \
-    ExprSolution
+    ExprSolution, boolean_expr, or_all
 from insatiable.util import Hashable
 
 
@@ -53,6 +53,13 @@ class Shape(Hashable):
 
         raise NotImplementedError
 
+    def boolean_value(self, item) -> Expr:
+        """
+        Convert the item to its "truthyness" value as an `Expr` instance.
+        """
+
+        raise NotImplementedError
+
 
 class SingletonShape(Shape):
     """
@@ -85,6 +92,9 @@ class BooleanShape(Shape):
     def python_value(self, item, solution):
         return solution(item)
 
+    def boolean_value(self, item) -> Expr:
+        return item
+
 
 _boolean_shape = BooleanShape()
 
@@ -102,13 +112,18 @@ class TupleShape(Shape):
     def python_value(self, item, solution):
         return tuple(i.evaluate(solution) for i in item)
 
+    def boolean_value(self, item) -> Expr:
+        return boolean_expr(self.len)
+
 
 class StringShape(SingletonShape):
-    pass
+    def boolean_value(self, item) -> Expr:
+        return boolean_expr(self.value)
 
 
 class FunctionShape(SingletonShape):
-    pass
+    def boolean_value(self, item) -> Expr:
+        return true
 
 
 class Box(NamedTuple):
@@ -211,17 +226,10 @@ def _boolean(value: Value) -> Expr:
     else to true.
     """
 
-    # Start with true and then remove slices where the value is either equal
-    # to `False` or `()`.
-    truthy = true
-
-    for box in value.boxes:
-        if box.shape == _boolean_shape:
-            truthy /= box.slice / box.item
-        elif box.shape == TupleShape(0):
-            truthy /= box.slice
-
-    return truthy
+    # The union of all truthy boxes.
+    return or_all(
+        box.shape.boolean_value(box.item) & box.slice
+        for box in value.boxes)
 
 
 class Variable:
