@@ -52,7 +52,7 @@ class Var(Expr):
         self.name = name
 
     def __repr__(self):
-        return f'vars.{self.name}'
+        return f'var.{self.name}'
 
 
 class Nand(Expr):
