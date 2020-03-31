@@ -5,10 +5,12 @@ import itertools
 import pathlib
 import sys
 import traceback
-from typing import Optional, NoReturn, Set, List, Tuple, Union, Any
+from typing import Mapping, NamedTuple, Optional, NoReturn, Set, List, Tuple, \
+    Union, Any
 
-from insatiable.expressions import Expr, var, true, false, solve_expr, or_all
-from insatiable.util import log
+from insatiable.expressions import Expr, var, true, false, solve_expr, ite, \
+    ExprSolution
+from insatiable.util import Hashable, log
 
 
 class CompilationError(SyntaxError):
@@ -28,73 +30,119 @@ def fail_unhandled_node(node) -> NoReturn:
     error(f'Unhandled node type: {type(node).__name__}', node)
 
 
+class Shape(Hashable):
+    def combine_items(self, condition: Expr, then_item, or_else_item):
+        raise NotImplementedError
+
+    def evaluate_item(self, item, solution: ExprSolution):
+        raise NotImplementedError
+
+
+class BooleanShape(Shape):
+    def _hashable_key(self):
+        return None
+
+    def combine_items(self, condition, then_item, or_else_item):
+        return ite(condition, then_item, or_else_item)
+
+    def evaluate_item(self, item, solution):
+        return solution(item)
+
+
+_boolean_shape = BooleanShape()
+
+
+class FunctionShape(Shape):
+    def __init__(self, function: 'Function'):
+        self.function = function
+
+    def _hashable_key(self):
+        return self.function
+
+    def combine_items(self, condition, then_item, or_else_item):
+        return None
+
+    def evaluate_item(self, item, solution):
+        return item
+
+
+class Box(NamedTuple):
+    item: Any
+    slice: Expr = true
+
+
 class Value:
-    def __init__(
-            self,
-            boolean_value: Expr,
-            boolean_slice: Expr,
-            functions: List[Tuple['Function', Expr]]):
+    def __init__(self, boxes_by_shape: Mapping[Shape, Box]):
         """
-        All conditions must be pair-wise disjoint. Each member of
+        All slices must be pair-wise disjoint and sum to `true`.
         `boolean_value` must imply `boolean_slice`.
         """
 
-        self.boolean_value = boolean_value
-        self.boolean_slice = boolean_slice
-        self.functions = functions
+        self.boxes_by_shape = boxes_by_shape
 
     def __repr__(self):
-        def iter_parts():
-            if self.boolean_slice != false:
-                yield f' boolean=({self.boolean_value}, {self.boolean_slice})'
+        return f'Value({self.boxes_by_shape})'
 
-            if self.functions:
-                yield f' function={self.functions}'
-
-        parts_str = ''.join(iter_parts())
-
-        return f'<Value{parts_str}>'
+    def evaluate(self, solution: ExprSolution):
+        for shape, box in self.boxes_by_shape.items():
+            if solution(box.slice):
+                return shape.evaluate_item(box.item, solution)
+        else:
+            assert False
 
 
 def _boolean_value(value: Expr):
-    return Value(value, true, [])
+    return Value({_boolean_shape: Box(value)})
 
 
 def _function_value(function: 'Function'):
-    return Value(false, false, [(function, true)])
+    return Value({FunctionShape(function): Box(None)})
 
 
 _none_value = _boolean_value(false)
 
 
 def _if(condition: Expr, then: Value, or_else: Value) -> Value:
-    def _mix_exprs(then_expr, or_else_expr):
-        return then_expr & condition | or_else_expr / condition
+    def iter_new_boxes():
+        for shape in {*then.boxes_by_shape, *or_else.boxes_by_shape}:
+            then_box = then.boxes_by_shape.get(shape, Box(None, false))
+            or_else_box = or_else.boxes_by_shape.get(shape, Box(None, false))
 
-    boolean_value = _mix_exprs(then.boolean_value, or_else.boolean_value)
-    boolean_slice = _mix_exprs(then.boolean_slice, or_else.boolean_slice)
+            then_slice = then_box.slice & condition
+            or_else_slice = or_else_box.slice / condition
 
-    # TODO: Merge slices of identical values.
-    def iter_function_values():
-        for value, cond in (then, condition), (or_else, ~condition):
-            for fn, slice in value.functions:
-                slice &= cond
+            if then_slice != false:
+                if or_else_slice != false:
+                    item = shape.combine_items(
+                        condition,
+                        then_box.item,
+                        or_else_box.item)
 
-                if slice != false:
-                    yield fn, slice
+                    slice = ite(condition, then_box.slice, or_else_box.slice)
 
-    return Value(boolean_value, boolean_slice, [*iter_function_values()])
+                    yield shape, Box(item, slice)
+                else:
+                    # TODO: Should we "thin" the items, i.e. remove cases in
+                    #  nested values that don't overlap with the new slice
+                    #  anymore?
+                    yield shape, Box(then_box.item, then_slice)
+            elif or_else_slice != false:
+                yield shape, Box(or_else_box.item, or_else_slice)
+
+    return Value(dict(iter_new_boxes()))
 
 
 def _boolean(value: Value) -> Expr:
     """
-    Map the specified value to a boolean expression, which is true wherever
-    the value is "truthy".
+    Map a boolean true value to true and anything else to false.
     """
 
-    exprs = [value.boolean_value, *(s for _, s in value.functions)]
+    sliced_value = value.boxes_by_shape.get(_boolean_shape)
 
-    return or_all(exprs)
+    if sliced_value is None:
+        return false
+
+    return sliced_value.item & sliced_value.slice
 
 
 class Variable:
@@ -135,7 +183,8 @@ class Scope:
     Represents the local scope of a function or the scope of a module.
     """
 
-    def __init__(self, local_names: Set[str], global_names: Set[str], parent: Optional['Scope']):
+    def __init__(self, local_names: Set[str], global_names: Set[str],
+                 parent: Optional['Scope']):
         """
         :param local_names:
             The names of variables that are defined in this scope..
@@ -311,8 +360,8 @@ class ExecutionState:
         self.exception_variable.write(value, self.slice)
         self.slice = false
 
-    def add_print_call(self, *values: Union[Value, str]):
-        self.print_calls.append(([*values], self.slice))
+    def add_print_call(self, *message: Union[Value, str]):
+        self.print_calls.append(([*message], self.slice))
 
     def read_variable(self, name: str) -> Value:
         variable = self.scope.find_variable(name)
@@ -328,9 +377,10 @@ class ExecutionState:
         with self.with_condition(~variable.assigned_slice):
             self.add_print_call(
                 f'Variable \'{name}\' referenced before assignment.')
-
             self.set_exception(_none_value)
 
+        # TODO: Maybe we should "trim" the value to the current scope to
+        #  prevent useless values from being processed.
         return variable.value
 
     def write_variable(self, name: str, value: Value):
@@ -411,8 +461,7 @@ def run_function(function: Function, args: List[Value], state: ExecutionState):
             state.add_print_call(
                 f'Function \'{function.node.name}\' called with {len(args)} '
                 f'instead {len(arg_names)} arguments.')
-
-            state.set_exception(_boolean_value(false))
+            state.set_exception(_none_value)
         else:
             scope = _collect_scope(function.node, function.closure_scope)
 
@@ -435,11 +484,12 @@ def run_call(fn_value: Value, args: List[Value], state: ExecutionState) -> Value
 
     # Call all function values within the current slice. This will accumulate
     # the return and exception values in the state.
-    for fn, fn_slice in fn_value.functions:
-        with state.with_condition(fn_slice):
-            # Try to optimize some obvious nonsense.
-            if state.slice != false:
-                run_function(fn, args, state)
+    for shape, box in fn_value.boxes_by_shape.items():
+        if isinstance(shape, FunctionShape):
+            with state.with_condition(box.slice):
+                # Try to optimize some obvious nonsense.
+                if state.slice != false:
+                    run_function(shape.function, args, state)
 
     # What is left is the slice where we did not have a function to call.
     state.add_print_call('Object is not callable:', fn_value)
@@ -613,28 +663,9 @@ def solve_module(module: Module) -> Optional[InsatiableSolution]:
         def iter_print_calls():
             for items, slice in print_calls:
                 if solution(slice):
-                    def iter_items():
-                        for j in items:
-                            if isinstance(j, Value):
-                                if solution(j.boolean_slice):
-                                    yield solution(j.boolean_value)
-                                else:
-                                    for f, s in j.functions:
-                                        if solution(s):
-                                            yield f
-
-                                            # The slices of a value must be
-                                            # disjoint, no more slices should
-                                            # match.
-                                            break
-                                    else:
-                                        # We should always have a value in
-                                        # the slice that print() was called.
-                                        assert False
-                            else:
-                                yield j
-
-                    yield [*iter_items()]
+                    yield [
+                        j.evaluate(solution) if isinstance(j, Value) else j
+                        for j in items]
 
             if solution(exception_variable.assigned_slice):
                 yield ['An assertion failed.']
