@@ -44,3 +44,16 @@ class Runner:
 
     def check_output_line(self, line: str):
         assert line in self.output.splitlines()
+
+
+def check_expression(expr: str, expected_output: str):
+    """
+    Return a string which results from passing the specified expression to
+    `print()` and capturing the output.
+    """
+
+    runner = Runner()
+
+    runner.run(f'print({expr})')
+
+    assert runner.output.strip() == expected_output

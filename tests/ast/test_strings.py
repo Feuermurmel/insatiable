@@ -1,11 +1,11 @@
-
-def test_print(runner):
-    runner.run('print("abc")')
-    assert runner.output.strip() == 'abc'
+from tests.ast.utils import check_expression
 
 
-def test_print_tuples(runner):
+def test_print():
+    check_expression("'abc'", 'abc')
+
+
+def test_print_tuples():
     # In the end, Python's __str__() is called, just check that we get what
     # we expected.
-    runner.run('print(("a", "b"))')
-    assert runner.output.strip() == "('a', 'b')"
+    check_expression('("a", "b")', "('a', 'b')")

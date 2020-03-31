@@ -1,9 +1,9 @@
-def test_booleans(runner):
-    runner.run('print(True)')
-    assert runner.output.strip() == 'True'
+from tests.ast.utils import check_expression
 
-    runner.run('print(False)')
-    assert runner.output.strip() == 'False'
+
+def test_booleans():
+    check_expression('True', 'True')
+    check_expression('False', 'False')
 
 
 def test_bool(runner):
