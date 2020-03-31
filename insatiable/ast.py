@@ -443,7 +443,7 @@ class ExecutionState:
         self.return_variable = Variable()
         self.exception_variable = Variable()
 
-        self.print_calls: List[Tuple[List[Value], Expr]] = []
+        self.output: List[Tuple[Value, Expr]] = []
 
     def __repr__(self):
         return f'<ExecutionState slice={self.slice}>'
@@ -454,19 +454,18 @@ class ExecutionState:
         self.return_variable.write(value, self.slice)
         self.slice = false
 
-    def set_exception(self, *message: Union[Value, str]):
+    def set_exception(self, *parts: Union[Value, str]):
         # TODO: Somehow also capture the location.
-        self.add_print_call(*message)
+        items = [
+            _string_value(part) if isinstance(part, str) else
+            part for part in parts]
 
-        self.exception_variable.write(_none_value, self.slice)
+        self.exception_variable.write(_tuple_value(items), self.slice)
         self.slice = false
 
-    def add_print_call(self, *message: Union[Value, str]):
-        values = [
-            _string_value(i) if isinstance(i, str) else i
-            for i in message]
 
-        self.print_calls.append((values, self.slice))
+    def add_output(self, parts: Value):
+        self.output.append((parts, self.slice))
 
     def read_variable(self, name: str) -> Value:
         variable = self.scope.find_variable(name)
@@ -568,10 +567,7 @@ def run_function(function: Function, args: List[Value], state: ExecutionState):
     if returns_constant == '__bool__':
         state.set_return(_boolean_value(_get_unique_var()))
     elif returns_constant == '__print__':
-        # TODO: Handle multiple arguments.
-        arg, = args
-
-        state.add_print_call(arg)
+        state.add_output(_tuple_value(args))
         state.set_return(_none_value)
     else:
         arg_names = [i.arg for i in function.node.args.args]
@@ -812,17 +808,17 @@ def run_block(stmts: List[ast.stmt], state: ExecutionState):
 
 
 class InsatiableSolution:
-    def __init__(self, print_calls: List[List[Any]]):
-        self.print_calls = print_calls
+    def __init__(self, output: List[Any]):
+        self.output = output
 
-    def run(self, print_dest=sys.stdout):
+    def run(self, output_file=sys.stdout):
         """
         Actually execute the side-effects of the program. This includes
         writing the output from all print() calls to the specified file.
         """
 
-        for items in self.print_calls:
-            print(*items, file=print_dest)
+        for items in self.output:
+            print(*items, file=output_file)
 
 
 def solve_module(module: Module) -> Optional[InsatiableSolution]:
@@ -839,8 +835,11 @@ def solve_module(module: Module) -> Optional[InsatiableSolution]:
         # The global variable __invariants__ should be set in all slices.
         invariants = _boolean(state.read_variable(_global_invariants))
 
-        exception_variable = state.exception_variable
-        print_calls = state.print_calls
+        output = [
+            *state.output,
+            (
+                state.exception_variable.value,
+                state.exception_variable.assigned_slice)]
     except CompilationError as exception:
         node = exception.node
         line = node.source.splitlines()[node.lineno - 1]
@@ -857,15 +856,12 @@ def solve_module(module: Module) -> Optional[InsatiableSolution]:
         if solution is None:
             return None
 
-        def iter_print_calls():
-            for values, slice in print_calls:
-                if solution(slice):
-                    yield [i.evaluate(solution) for i in values]
+        evaluated_output = [
+            value.evaluate(solution)
+            for value, slice in output
+            if solution(slice)]
 
-            if solution(exception_variable.assigned_slice):
-                yield ['An assertion failed.']
-
-        return InsatiableSolution([*iter_print_calls()])
+        return InsatiableSolution(evaluated_output)
 
 
 def run_module(module: Module):
