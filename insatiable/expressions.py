@@ -141,6 +141,14 @@ def ite(condition, then, or_else):
     return then & condition | or_else / condition
 
 
+def boolean_expr(value):
+    """
+    Return a boolean expression matching the truthyness of the specified value.
+    """
+
+    return true if value else false
+
+
 false = _nand()
 true = ~false
 
