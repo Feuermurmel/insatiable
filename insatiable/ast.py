@@ -447,7 +447,7 @@ class ExecutionState:
         self.return_variable = Variable()
         self.exception_variable = Variable()
 
-        self.output: List[Tuple[Value, Expr]] = []
+        self.print_calls: List[Tuple[Value, Expr]] = []
 
     def __repr__(self):
         return f'<ExecutionState slice={self.slice}>'
@@ -458,11 +458,11 @@ class ExecutionState:
         self.return_variable.write(value, self.slice)
         self.slice = false
 
-    def set_exception(self, *parts: Union[Value, str]):
+    def set_exception(self, *message: Union[Value, str]):
         # TODO: Somehow also capture the location.
         items = [
             _string_value(part) if isinstance(part, str) else
-            part for part in parts]
+            part for part in message]
 
         self.exception_variable.write(_tuple_value(items), self.slice)
         self.slice = false
@@ -483,8 +483,8 @@ class ExecutionState:
 
         return exception_value, exception_slice
 
-    def add_output(self, parts: Value):
-        self.output.append((parts, self.slice))
+    def add_print_call(self, args: Value):
+        self.print_calls.append((args, self.slice))
 
     def read_variable(self, name: str) -> Value:
         variable = self.scope.find_variable(name)
@@ -586,7 +586,7 @@ def run_function(function: Function, args: List[Value], state: ExecutionState):
     if returns_constant == '__bool__':
         state.set_return(_boolean_value(_get_unique_var()))
     elif returns_constant == '__print__':
-        state.add_output(_tuple_value(args))
+        state.add_print_call(_tuple_value(args))
         state.set_return(_none_value)
     else:
         arg_names = [i.arg for i in function.node.args.args]
@@ -826,21 +826,33 @@ def run_block(stmts: List[ast.stmt], state: ExecutionState):
             fail_unhandled_node(stmt)
 
 
-class InsatiableSolution:
-    def __init__(self, output: List[Any]):
+class InsatiableProgram:
+    def __init__(self, invariant: Expr, exception: Expr, output: List[Tuple[Value, Expr]]):
+        self.invariant = invariant
+        self.exception = exception
         self.output = output
 
-    def run(self, output_file=sys.stdout):
-        """
-        Actually execute the side-effects of the program. This includes
-        writing the output from all print() calls to the specified file.
-        """
+    def solve(self, satisfy=None) -> Optional['InsatiableSolution']:
+        if satisfy is None:
+            satisfy = self.invariant
 
-        for items in self.output:
-            print(*items, file=output_file)
+        solution = solve_expr(satisfy)
+
+        if solution is None:
+            return None
+
+        evaluated_print_calls = [
+            value.evaluate(solution)
+            for value, slice in self.output
+            if solution(slice)]
+
+        return InsatiableSolution(
+            solution(self.invariant),
+            solution(self.exception),
+            evaluated_print_calls)
 
 
-def solve_module(module: Module) -> Optional[InsatiableSolution]:
+def build_program(module: Module) -> InsatiableProgram:
     try:
         # We glue some code in front of the module to define some builtins.
         merged_module_ast = ast.Module(
@@ -858,9 +870,9 @@ def solve_module(module: Module) -> Optional[InsatiableSolution]:
 
         # Print an exception, if one was thrown.
         for _ in state.on_condition(exception_slice):
-            state.add_output(exception_value)
+            state.add_print_call(exception_value)
 
-        output = state.output
+        print_calls = state.print_calls
     except CompilationError as exception:
         node = exception.node
         line = node.source.splitlines()[node.lineno - 1]
@@ -871,22 +883,32 @@ def solve_module(module: Module) -> Optional[InsatiableSolution]:
         data = (node.source_name, node.lineno, node.col_offset + 1, line)
 
         raise SyntaxError(exception, data) from None
-    else:
-        solution = solve_expr(invariants)
 
-        if solution is None:
-            return None
-
-        evaluated_output = [
-            value.evaluate(solution)
-            for value, slice in output
-            if solution(slice)]
-
-        return InsatiableSolution(evaluated_output)
+    return InsatiableProgram(invariants, exception_slice, print_calls)
 
 
-def run_module(module: Module):
-    solution = solve_module(module)
+class InsatiableSolution:
+    def __init__(self, invariant: bool, exception: bool, output: List[Any]):
+        self.invariant = invariant
+        self.exception = exception
+        self.output = output
+
+    def run(self, print_dest=sys.stdout):
+        """
+        Actually execute the side-effects of the program. This includes
+        writing the output from all print() calls to the specified file.
+        """
+
+        for items in self.output:
+            print(*items, file=print_dest)
+
+
+def solve_program(module: Module) -> Optional[InsatiableSolution]:
+    return build_program(module).solve()
+
+
+def run_program(module: Module):
+    solution = solve_program(module)
 
     if solution is None:
         raise UnsatisfiableError('No solutions found.')

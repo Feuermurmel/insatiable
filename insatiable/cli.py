@@ -2,7 +2,7 @@ import argparse
 import pathlib
 import sys
 
-from insatiable.ast import load_insat_module, run_module
+from insatiable.ast import load_insat_module, run_program
 from insatiable.util import log, UserError
 
 
@@ -17,7 +17,7 @@ def parse_args():
 
 
 def main(file):
-    run_module(load_insat_module(file))
+    run_program(load_insat_module(file))
 
 
 def entry_point():
