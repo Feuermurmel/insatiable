@@ -454,9 +454,11 @@ class ExecutionState:
         self.return_variable.write(value, self.slice)
         self.slice = false
 
-    def set_exception(self, value):
+    def set_exception(self, *message: Union[Value, str]):
         # TODO: Somehow also capture the location.
-        self.exception_variable.write(value, self.slice)
+        self.add_print_call(*message)
+
+        self.exception_variable.write(_none_value, self.slice)
         self.slice = false
 
     def add_print_call(self, *message: Union[Value, str]):
@@ -478,9 +480,8 @@ class ExecutionState:
 
         # Catch slices in which the variable has not been assigned yet.
         for _ in self.on_condition(~variable.assigned_slice):
-            self.add_print_call(
+            self.set_exception(
                 f'Variable \'{name}\' referenced before assignment.')
-            self.set_exception(_none_value)
 
         # TODO: Maybe we should "trim" the value to the current scope to
         #  prevent useless values from being processed.
@@ -576,10 +577,9 @@ def run_function(function: Function, args: List[Value], state: ExecutionState):
         arg_names = [i.arg for i in function.node.args.args]
 
         if len(args) != len(arg_names):
-            state.add_print_call(
+            state.set_exception(
                 f'Function \'{function.node.name}\' called with {len(args)} '
                 f'instead {len(arg_names)} arguments.')
-            state.set_exception(_none_value)
         else:
             scope = _collect_scope(function.node, function.closure_scope)
 
@@ -607,8 +607,7 @@ def run_call(fn_value: Value, args: List[Value], state: ExecutionState) -> Value
             run_function(shape.value, args, state)
 
     # What is left is the slice where we did not have a function to call.
-    state.add_print_call('Object is not callable:', fn_value)
-    state.set_exception(_none_value)
+    state.set_exception('Object is not callable:', fn_value)
 
     return_variable = state.return_variable
 
@@ -673,9 +672,8 @@ def run_expression(node: ast.expr, state: ExecutionState) -> Value:
             for _, tuple_item in state.on_each_box(result_value):
                 for shape, item in state.on_each_box(value):
                     if not isinstance(shape, TupleShape):
-                        state.add_print_call(
+                        state.set_exception(
                             'Can only unpack a tuple, got:', value)
-                        state.set_exception(_none_value)
                     else:
                         x = _tuple_value(tuple_item + item)
                         new_value = _if(state.slice, x, new_value)
@@ -706,8 +704,7 @@ def run_assignment(target: ast.expr, value: Value, state: ExecutionState):
 
         for shape, item in state.on_each_box(value):
             if not isinstance(shape, TupleShape):
-                state.add_print_call('Can only unpack a tuple, got:', value)
-                state.set_exception(_none_value)
+                state.set_exception('Can only unpack a tuple, got:', value)
             elif starred_items:
                 (prefix_end, starred), *rest = starred_items
                 starred_len = shape.len - target_len
@@ -716,10 +713,9 @@ def run_assignment(target: ast.expr, value: Value, state: ExecutionState):
                     error('Multiple starred expressions.', target)
 
                 if starred_len < 0:
-                    state.add_print_call(
+                    state.set_exception(
                         f'Need a tuple with at least {target_len} elements, '
                         f'got:', value)
-                    state.set_exception(_none_value)
                 else:
                     target_suffix_start = prefix_end + 1
                     value_suffix_start = prefix_end + starred_len
@@ -742,10 +738,9 @@ def run_assignment(target: ast.expr, value: Value, state: ExecutionState):
                         run_assignment(t, v, state)
             else:
                 if shape.len != target_len:
-                    state.add_print_call(
+                    state.set_exception(
                         f'Need a tuple with exactly {target_len} elements, '
                         f'got:', value)
-                    state.set_exception(_none_value)
                 else:
                     for element, value in zip(target.elts, item):
                         run_assignment(element, value, state)
@@ -784,8 +779,7 @@ def run_block(stmts: List[ast.stmt], state: ExecutionState):
             else:
                 value = run_expression(stmt.exc, state)
 
-            state.add_print_call('Exception raised:', value)
-            state.set_exception(value)
+            state.set_exception('Exception raised:', value)
         elif isinstance(stmt, ast.Assign):
             value = run_expression(stmt.value, state)
 
