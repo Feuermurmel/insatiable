@@ -36,4 +36,4 @@ def __or__(left, right_thunk):
 
 # Implementation inserted by the runtime.
 def bool() -> '__bool__': pass
-def print() -> '__print__': pass
+def print(*items) -> '__print__': pass

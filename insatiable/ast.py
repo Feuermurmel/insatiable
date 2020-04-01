@@ -845,20 +845,20 @@ def run_block(stmts: List[ast.stmt], state: ExecutionState):
             for _ in state.on_condition(~condition):
                 run_block(stmt.orelse, state)
         elif isinstance(stmt, ast.FunctionDef):
-            # All the stuff we don't support.
-            assert not stmt.args.posonlyargs
-            assert not stmt.args.vararg
-            assert not stmt.args.kwonlyargs
-            assert not stmt.args.kw_defaults
-            assert not stmt.args.kwarg
-            assert not stmt.args.defaults
-            assert not stmt.decorator_list
-
             # Check whether this is a special function whose implementation
             # is provided by the runtime.
             function = _get_native_function_impl(stmt)
 
             if function is None:
+                # All the stuff we don't support.
+                assert not stmt.args.posonlyargs
+                assert not stmt.args.vararg
+                assert not stmt.args.kwonlyargs
+                assert not stmt.args.kw_defaults
+                assert not stmt.args.kwarg
+                assert not stmt.args.defaults
+                assert not stmt.decorator_list
+
                 # In the execution context where the function is instantiated,
                 # it has no further conditions. When the variable is assigned,
                 # the condition of the current execution context is applied.
