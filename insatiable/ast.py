@@ -417,12 +417,63 @@ _global_invariants = '__invariants__'
 
 
 class Function:
+    def run(self, args: List[Value], state: 'ExecutionState'):
+        """
+        Run the body of the function with a new scope and the arguments
+        assigned to local variables. Leaves the return value in the return
+        variable of the state.
+        """
+
+        raise NotImplementedError
+
+
+class DefFunction(Function):
     def __init__(self, node: ast.FunctionDef, closure_scope: Scope):
         self.node = node
         self.closure_scope = closure_scope
 
     def __repr__(self):
         return f'<Function {self.node.name}>'
+
+    def run(self, args: List[Value], state: 'ExecutionState'):
+        arg_names = [i.arg for i in self.node.args.args]
+
+        if len(args) != len(arg_names):
+            state.set_exception(
+                f'Function \'{self.node.name}\' called with {len(args)} '
+                f'instead {len(arg_names)} arguments.')
+        else:
+            scope = _collect_scope(self.node, self.closure_scope)
+
+            with state.with_scope(scope):
+                # Write arguments to the self's scope.
+                for n, a in zip(arg_names, args):
+                    state.write_variable(n, a)
+
+                run_block(self.node.body, state)
+
+            # Handle falling out of the function without a return statement.
+            state.set_return(_none_value)
+
+
+class BoolNativeFunction(Function):
+    def run(self, args: List[Value], state: 'ExecutionState'):
+        state.set_return(_boolean_value(_get_unique_var()))
+
+
+class PrintNativeFunction(Function):
+    def run(self, args: List[Value], state: 'ExecutionState'):
+        state.add_print_call(_tuple_value(args))
+        state.set_return(_none_value)
+
+
+# Some functions' implementations are provided by the runtime. These are
+# resolved by having a stub def in builtins.isat with a return type
+# annotation which is a string value recognized by the runtime. This dict
+# maps from those string values to the implementations.
+_native_functions_by_annotation = {
+    '__bool__': BoolNativeFunction(),
+    '__print__': PrintNativeFunction()}
 
 
 _unique_var_counter = itertools.count()
@@ -563,52 +614,6 @@ def get_function_returns_constant(node: ast.FunctionDef):
         return None
 
 
-def run_function(function: Function, args: List[Value], state: ExecutionState):
-    """
-    Runs the body of the function with a new scope and the argument assigned
-    to local variables. Leaves the return value in the return variable of the
-    state.
-    """
-
-    assert not function.node.args.posonlyargs
-    # assert not function.node.args.args
-    assert not function.node.args.vararg
-    assert not function.node.args.kwonlyargs
-    assert not function.node.args.kw_defaults
-    assert not function.node.args.kwarg
-    assert not function.node.args.defaults
-    assert not function.node.decorator_list
-
-    returns_constant = get_function_returns_constant(function.node)
-
-    # Check whether this is a special function providing functionality
-    # provided by the runtime.
-    if returns_constant == '__bool__':
-        state.set_return(_boolean_value(_get_unique_var()))
-    elif returns_constant == '__print__':
-        state.add_print_call(_tuple_value(args))
-        state.set_return(_none_value)
-    else:
-        arg_names = [i.arg for i in function.node.args.args]
-
-        if len(args) != len(arg_names):
-            state.set_exception(
-                f'Function \'{function.node.name}\' called with {len(args)} '
-                f'instead {len(arg_names)} arguments.')
-        else:
-            scope = _collect_scope(function.node, function.closure_scope)
-
-            with state.with_scope(scope):
-                # Write arguments to the function's scope.
-                for n, a in zip(arg_names, args):
-                    state.write_variable(n, a)
-
-                run_block(function.node.body, state)
-
-            # Handle falling out of the function without a return statement.
-            state.set_return(_none_value)
-
-
 def run_call(fn_value: Value, args: List[Value], state: ExecutionState) -> Value:
     # Save the return value from the current stack frame and prepare an empty
     # return value.
@@ -619,7 +624,7 @@ def run_call(fn_value: Value, args: List[Value], state: ExecutionState) -> Value
     # the return and exception values in the state.
     for shape, item in state.on_each_box(fn_value):
         if isinstance(shape, FunctionShape):
-            run_function(shape.value, args, state)
+            shape.value.run(args, state)
 
     # What is left is the slice where we did not have a function to call.
     state.set_exception('Object is not callable:', fn_value)
@@ -810,12 +815,27 @@ def run_block(stmts: List[ast.stmt], state: ExecutionState):
             for _ in state.on_condition(~condition):
                 run_block(stmt.orelse, state)
         elif isinstance(stmt, ast.FunctionDef):
-            # In the execution context where the function is instantiated,
-            # it has no further conditions. When the variable is assigned,
-            # the condition of the current execution context is applied.
-            value = _function_value(Function(stmt, state.scope))
+            # All the stuff we don't support.
+            assert not stmt.args.posonlyargs
+            assert not stmt.args.vararg
+            assert not stmt.args.kwonlyargs
+            assert not stmt.args.kw_defaults
+            assert not stmt.args.kwarg
+            assert not stmt.args.defaults
+            assert not stmt.decorator_list
 
-            state.write_variable(stmt.name, value)
+            # Check whether this is a special function whose implementation
+            # is provided by the runtime.
+            function = _native_functions_by_annotation.get(
+                get_function_returns_constant(stmt))
+
+            if function is None:
+                # In the execution context where the function is instantiated,
+                # it has no further conditions. When the variable is assigned,
+                # the condition of the current execution context is applied.
+                function = DefFunction(stmt, state.scope)
+
+            state.write_variable(stmt.name, _function_value(function))
         elif isinstance(stmt, ast.Expr):
             run_expression(stmt.value, state)
         elif isinstance(stmt, ast.Return):
