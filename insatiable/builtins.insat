@@ -20,18 +20,18 @@ def __not__(x):
     return True
 
 
-def __and__(a, b):
-    if a:
-        return b
+def __and__(left, right_thunk):
+    if left:
+        return right_thunk()
 
-    return a
+    return left
 
 
-def __or__(a, b):
-    if a:
-        return a
+def __or__(left, right_thunk):
+    if left:
+        return left
 
-    return b
+    return right_thunk()
 
 
 # Implementation inserted by the runtime.

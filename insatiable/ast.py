@@ -428,6 +428,10 @@ class Function:
 
 
 class DefFunction(Function):
+    """
+    Represents an instance of a function declared with the `def` keyword.
+    """
+
     def __init__(self, node: ast.FunctionDef, closure_scope: Scope):
         self.node = node
         self.closure_scope = closure_scope
@@ -454,6 +458,24 @@ class DefFunction(Function):
 
             # Handle falling out of the function without a return statement.
             state.set_return(_none_value)
+
+
+class ThunkFunction(Function):
+    """
+    Represents a function created from a plain expression in places where the
+    expression is only conditionally evaluated (e.g. short-circuit boolean
+    operations).
+    """
+
+    def __init__(self, node: ast.expr, scope: Scope):
+        self.node = node
+        self.scope = scope
+
+    def run(self, args: List[Value], state: 'ExecutionState'):
+        assert not args
+
+        with state.with_scope(self.scope):
+            state.set_return(run_expression(self.node, state))
 
 
 class BoolNativeFunction(Function):
@@ -669,8 +691,12 @@ def run_expression(node: ast.expr, state: ExecutionState) -> Value:
         value = run_expression(first_node, state)
 
         for i in rest:
-            right_value = run_expression(i, state)
-            value = call_special(special_name, [value, right_value], state)
+            # A parameter-less function is created and passed to the
+            # implementation of the short-circuit operator. This allows the
+            # expression to only be evaluated when necessary.
+            operand_thunk = _function_value(ThunkFunction(i, state.scope))
+
+            value = call_special(special_name, [value, operand_thunk], state)
 
         return value
     elif isinstance(node, ast.Tuple):
