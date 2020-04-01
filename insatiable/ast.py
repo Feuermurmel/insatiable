@@ -498,6 +498,22 @@ _native_functions_by_annotation = {
     '__print__': PrintNativeFunction()}
 
 
+def _get_native_function_impl(node: ast.FunctionDef):
+    """
+    Detect the return type annotation used to mark functions implemented by
+    the runtime and return the implementation.
+    """
+
+    if isinstance(node.returns, ast.Constant):
+        value = node.returns.value
+
+        if isinstance(value, str):
+            if value.startswith('__') and value.endswith('__'):
+                return _native_functions_by_annotation[value]
+
+    return None
+
+
 _unique_var_counter = itertools.count()
 
 
@@ -622,18 +638,6 @@ class ExecutionState:
         yield
 
         self.scope = saved_scope
-
-
-def get_function_returns_constant(node: ast.FunctionDef):
-    """
-    Return the value of the function's returns annotation, if it is a plain
-    constant.
-    """
-
-    if isinstance(node.returns, ast.Constant):
-        return node.returns.value
-    else:
-        return None
 
 
 def run_call(fn_value: Value, args: List[Value], state: ExecutionState) -> Value:
@@ -852,8 +856,7 @@ def run_block(stmts: List[ast.stmt], state: ExecutionState):
 
             # Check whether this is a special function whose implementation
             # is provided by the runtime.
-            function = _native_functions_by_annotation.get(
-                get_function_returns_constant(stmt))
+            function = _get_native_function_impl(stmt)
 
             if function is None:
                 # In the execution context where the function is instantiated,
