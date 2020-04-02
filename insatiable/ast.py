@@ -60,6 +60,13 @@ class Shape(Hashable):
 
         raise NotImplementedError
 
+    def type_function(self, item) -> 'Function':
+        """
+        Return the function representing the type of values using this shape.
+        """
+
+        raise NotImplementedError
+
 
 class SingletonShape(Shape):
     """
@@ -95,6 +102,12 @@ class BooleanShape(Shape):
     def boolean_value(self, item) -> Expr:
         return item
 
+    def type_function(self, item):
+        # Need to make sure that we return the exact instance also used for
+        # the function defined in builtins.insat. Instances of the same
+        # function don't compare equal.
+        return _native_functions_by_annotation['__bool__']
+
 
 _boolean_shape = BooleanShape()
 
@@ -115,15 +128,24 @@ class TupleShape(Shape):
     def boolean_value(self, item) -> Expr:
         return boolean_expr(self.len)
 
+    def type_function(self, item):
+        return _native_functions_by_annotation['__tuple__']
+
 
 class StringShape(SingletonShape):
     def boolean_value(self, item) -> Expr:
         return boolean_expr(self.value)
 
+    def type_function(self, item):
+        return _native_functions_by_annotation['__str__']
+
 
 class FunctionShape(SingletonShape):
     def boolean_value(self, item) -> Expr:
         return true
+
+    def type_function(self, item):
+        return _native_functions_by_annotation['__callable__']
 
 
 class Box(NamedTuple):
@@ -482,9 +504,61 @@ class BoolNativeFunction(Function):
     def run(self, args: List[Value], state: 'ExecutionState'):
         state.set_return(_boolean_value(_get_unique_var()))
 
+    def __repr__(self):
+        return 'bool'
+
+
+class TupleNativeFunction(Function):
+    """
+    This function has no purpose except for representing the type if tuple
+    values.
+    """
+
+    def run(self, args, state):
+        state.set_return(_tuple_value(args))
+
+    def __repr__(self):
+        return 'tuple'
+
+
+class StrNativeFunction(Function):
+    """
+    This function has no purpose except for representing the type if tuple
+    values.
+    """
+
+    def run(self, args, state):
+        # TODO: Implement something here.
+        assert False
+
+    def __repr__(self):
+        return 'str'
+
+
+class CallableNativeFunction(Function):
+    """
+    This function has no purpose except for representing the type if tuple
+    values.
+    """
+
+    def run(self, args, state):
+        # TODO: Implement something here.
+        assert False
+
+    def __repr__(self):
+        return 'callable'
+
+
+class TypeNativeFunction(Function):
+    def run(self, args, state):
+        arg, = args
+
+        for shape, item in state.on_each_box(arg):
+            state.set_return(_function_value(shape.type_function(item)))
+
 
 class PrintNativeFunction(Function):
-    def run(self, args: List[Value], state: 'ExecutionState'):
+    def run(self, args, state):
         state.add_print_call(_tuple_value(args))
         state.set_return(_none_value)
 
@@ -495,6 +569,10 @@ class PrintNativeFunction(Function):
 # maps from those string values to the implementations.
 _native_functions_by_annotation = {
     '__bool__': BoolNativeFunction(),
+    '__tuple__': TupleNativeFunction(),
+    '__str__': StrNativeFunction(),
+    '__callable__': CallableNativeFunction(),
+    '__type__': TypeNativeFunction(),
     '__print__': PrintNativeFunction()}
 
 
