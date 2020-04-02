@@ -34,6 +34,78 @@ def __or__(left, right_thunk):
     return right_thunk()
 
 
+def __eq__(left, right):
+    left_type = type(left)
+    right_type = type(right)
+
+    if not __dumb_eq__(left_type, right_type):
+        return False
+
+    if __dumb_eq__(left_type, bool):
+        return left and right or not left and not right
+
+    if __dumb_eq__(left_type, tuple):
+        if left:
+            if not right:
+                return False
+
+            left_head, *left_tail = left
+            right_head, *right_tail = right
+
+            return left_head == right_head and left_tail == right_tail
+        else:
+            return not right
+
+    # Delegate simple types to the native implementation.
+    return __dumb_eq__(left, right)
+
+
+def __ne__(left, right):
+    return not left == right
+
+
+def __is__(left, right):
+    # We don't have support for any non-value types, so `==` and `is` serve
+    # the same purpose.
+    return left == right
+
+
+def __is_not__(left, right):
+    return not (left is right)
+
+
+# Implementation of `==` which can be used for anything that does not contain
+# nested values.
+def __dumb_eq__(left, right) -> '__dumb_eq__': pass
+
+
+def __compare__(left_term, ops_and_term_thunks):
+    """
+    Evaluate a chained comparison operation like `a == b != c`.
+
+    :param left_term:
+        The first, strictly evaluated term in the chain of comparisons.
+
+    :param ops_and_term_thunks:
+        A sequence of `(operation, term)` pairs where `operation` is the next
+        operation comparing the previous term with `term`.
+    """
+
+    if not ops_and_term_thunks:
+        return True
+
+    (op, right_term_thunk), *rest = ops_and_term_thunks
+
+    # Evaluate the next term here, guaranteeing that it will only be
+    # evaluated once regardless of whether the next comparsion using this
+    # term needs to be evaluated or not
+    right_term = right_term_thunk()
+
+    # Short-circuiting of the `and` operator guarantees that recursion is
+    # aborted here of the current comparison yields `False`.
+    return op(left_term, right_term) and __compare__(right_term, rest)
+
+
 # Implementation inserted by the runtime.
 def bool() -> '__bool__': pass
 def tuple(*items) -> '__tuple__': pass

@@ -563,6 +563,19 @@ class PrintNativeFunction(Function):
         state.set_return(_none_value)
 
 
+class DumbEqFunction(Function):
+    def run(self, args, state):
+        left, right = args
+
+        for left_shape, left_item in state.on_each_box(left):
+            for right_shape, right_item in state.on_each_box(right):
+                # We know that we only get shapes here which don't use the
+                # boxes item.
+                equal_expr = boolean_expr(left_shape == right_shape)
+
+                state.set_return(_boolean_value(equal_expr))
+
+
 # Some functions' implementations are provided by the runtime. These are
 # resolved by having a stub def in builtins.isat with a return type
 # annotation which is a string value recognized by the runtime. This dict
@@ -573,7 +586,8 @@ _native_functions_by_annotation = {
     '__str__': StrNativeFunction(),
     '__callable__': CallableNativeFunction(),
     '__type__': TypeNativeFunction(),
-    '__print__': PrintNativeFunction()}
+    '__print__': PrintNativeFunction(),
+    '__dumb_eq__': DumbEqFunction()}
 
 
 def _get_native_function_impl(node: ast.FunctionDef):
@@ -781,6 +795,35 @@ def run_expression(node: ast.expr, state: ExecutionState) -> Value:
             value = call_special(special_name, [value, operand_thunk], state)
 
         return value
+    elif isinstance(node, ast.Compare):
+        special_function_names = {
+            ast.Eq: '__eq__',
+            ast.NotEq: '__ne__',
+            ast.Is: '__is__',
+            ast.IsNot: '__is_not__'}
+
+        first = run_expression(node.left, state)
+
+        # Get all the functions implementing the comparison operations.
+        op_values = [
+            state.read_variable(special_function_names[type(i)])
+            for i in node.ops]
+
+        # Get thunks for all the compared terms after the first.
+        term_thunk_values = [
+            _function_value(ThunkFunction(i, state.scope))
+            for i in node.comparators]
+
+        # Zip each comparison function with the term is precedes.
+        ops_and_term_thunks = _tuple_value(
+            [
+                _tuple_value([op, term])
+                for op, term in zip(op_values, term_thunk_values)])
+
+        # Call a special function which implements evaluating the whole
+        # comparison expression, adhering to the correct order and conditions
+        # of evaluating each term.
+        return call_special('__compare__', [first, ops_and_term_thunks], state)
     elif isinstance(node, ast.Tuple):
         # Value to which all values and unpacked tuples are appended.
         result_value = _tuple_value([])
